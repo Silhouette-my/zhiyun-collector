@@ -1,6 +1,6 @@
 # Zhiyun Collector
 
-智云课堂独立采集插件，供 Course Compiler 的通用插件宿主调用。当前版本 **0.3.0.dev1**，稳定工具 ID 为 `handouter-zhiyun-collector`，保留 v1 浏览器 ZIP 转换与 v2 登录、课程浏览及直接采集接口。
+智云课堂独立采集插件，供 Course Compiler 的通用插件宿主调用。当前版本 **0.3.0.dev2**，稳定工具 ID 为 `handouter-zhiyun-collector`，保留 v1 浏览器 ZIP 转换与 v2 登录、课程浏览及直接采集接口。
 
 这是**公开可见的源码（source-available），不是开源授权项目**。自有代码保留所有权利，使用、修改和再分发需取得许可；第三方 MIT 部分及适用范围见 [NOTICE](src/handouter_zhiyun_collector/THIRD_PARTY_NOTICES.txt) 和 [LICENSE](LICENSE)。GitHub 平台条款授予的权利仍适用。
 
@@ -13,6 +13,33 @@
 5. 下载与登录不授权云上传。只有本体整理出的白名单材料，在用户另行确认后才可以提交云端。
 
 v1 用户也可以继续通过配套 [浏览器脚本](src/handouter_zhiyun_collector/zhiyun_exporter.user.js) 导出 ZIP，再由插件预检和转换。脚本 ZIP 含私有下载地址，只在本机保存，禁止上传或提交到仓库。
+
+## 在 TUI／命令行中使用
+
+TUI 不再内置网站解析或浏览器脚本。安装匹配平台的独立插件后，先导出配套脚本并注册一次：
+
+```bash
+handouter-zhiyun-collector export-script --output /absolute/new/zhiyun_exporter.user.js
+course-compiler collector-configure --executable /absolute/handouter-zhiyun-collector --sha256 <可信发布者提供的二进制摘要> --tool-id handouter-zhiyun-collector --exporter-script /absolute/new/zhiyun_exporter.user.js
+```
+
+之后继续把浏览器 ZIP 放进原 TUI 的 Source File。TUI 先调用独立插件预检，展示精确媒体域名；确认后才下载，标准包完整预检成功后再进入本地转写。安装插件及下载均不等于同意上传。TXT、音视频和标准包不需要采集插件。
+
+纯命令行可以先预检，再明确给出本次确认的域名：
+
+```bash
+course-compiler collector-inspect /absolute/browser-export.zip
+course-compiler run --asset /absolute/browser-export.zip --allowed-media-host media.example.org --agent manual
+```
+
+没有安装 Course Compiler 时，也可单独使用插件转换：
+
+```bash
+handouter-zhiyun-collector inspect --browser-export /absolute/browser-export.zip
+handouter-zhiyun-collector --browser-export /absolute/browser-export.zip --allowed-media-host media.example.org --output /absolute/new-standard.zip
+```
+
+Windows 使用同样的参数名，并将程序路径替换为 `.exe`；路径作为独立参数传递，不拼接 shell。输出文件必须尚不存在。TUI 插件注册保存在用户 Handouter 配置目录的 `collector.json`，不会从 ZIP 提取软件入口。
 
 ## 经授权的本地开发
 

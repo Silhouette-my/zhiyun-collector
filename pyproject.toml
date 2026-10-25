@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "handouter-zhiyun-collector"
-version = "0.3.0.dev1"
+version = "0.3.0.dev2"
 description = "Independent authorized Zhiyun collector for Course Compiler"
 readme = "README.md"
 requires-python = ">=3.11,<4"

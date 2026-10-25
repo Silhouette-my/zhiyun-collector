@@ -92,6 +92,9 @@ def inspect_export(export_zip: str | Path, *, require_https: bool = False) -> di
             with zipfile.ZipFile(source_stream) as archive:
                 private = _small(archive, "private/source.json")
                 course = _small(archive, "course_info.json")
+                if not isinstance(private, dict) or not isinstance(course, dict):
+                    raise CollectorError("浏览器资产包元数据格式无效")
+                fingerprint = _browser_fingerprint(archive)
             if _sha256_stream(source_stream) != digest:
                 raise CollectorError("浏览器资产包在预检期间已更改")
     except (OSError, zipfile.BadZipFile) as exc:
@@ -123,7 +126,56 @@ def inspect_export(export_zip: str | Path, *, require_https: bool = False) -> di
         except ValueError as exc:
             raise CollectorError("课程日期格式无效") from exc
     return {"course_title": title, "lecture_date": day,
-            "media_hosts": [host], "source_sha256": digest}
+            "media_hosts": [host], "source_sha256": digest,
+            "source_id": _source_id(private, course, source.name), "source_fingerprint": fingerprint}
+
+
+def _source_id(private: dict, course: dict, filename: str) -> str:
+    """The stable legacy identifier is public metadata; page URLs stay private."""
+    page = private.get("pageUrl") or course.get("pageUrl") or ""
+    page = page.strip() if isinstance(page, str) else ""
+    split = urllib.parse.urlsplit(page)
+    query = split.query or (split.fragment.split("?", 1)[1] if "?" in split.fragment else "")
+    fields = urllib.parse.parse_qs(query)
+    values = [(fields.get(name) or [""])[0] for name in ("tenant_code", "course_id", "sub_id")]
+    parts = [value for value in values if re.fullmatch(r"[A-Za-z0-9_-]+", value)]
+    identifier = "zhiyun-" + "-".join(parts)
+    if values[1] and values[2] and len(parts) >= 2 and len(identifier) <= 120:
+        return identifier
+    return "zhiyun-" + hashlib.sha256((page or filename).encode()).hexdigest()[:12]
+
+
+def _browser_fingerprint(archive: zipfile.ZipFile) -> str:
+    """Preserve old task/cache identity without exposing signed media locations."""
+    digest = hashlib.sha256()
+    infos = archive.infolist()
+    if len(infos) > 10000 or sum(info.file_size for info in infos) > MAX_SOURCE_UNCOMPRESSED:
+        raise CollectorError("浏览器资产包超过安全大小限制")
+    names = set()
+    for info in sorted(infos, key=lambda value: value.filename):
+        if info.is_dir():
+            continue
+        name = _name(info.filename)
+        if name in names:
+            raise CollectorError("浏览器资产包包含重复成员")
+        names.add(name)
+        if "private" in name.split("/"):
+            if name.endswith("private/source.json") and info.file_size <= 1024 * 1024:
+                private = _small(archive, info.filename)
+                for key in ("videoUrl", "mediaUrl"):
+                    if isinstance(private.get(key), str):
+                        parts = urllib.parse.urlsplit(private[key])
+                        transient = {"auth_key", "token", "access_token", "signature", "sig", "expires", "expiration", "api_key", "cookie"}
+                        query = [(key, value) for key, value in urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+                                 if key.lower() not in transient and not key.lower().startswith("x-amz-")]
+                        location = parts._replace(query=urllib.parse.urlencode(query), fragment="").geturl()
+                        digest.update(location.encode())
+            continue
+        digest.update(name.encode() + b"\0")
+        with archive.open(info) as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _small(archive: zipfile.ZipFile, name: str) -> object:

@@ -20,7 +20,7 @@ class DistributionTests(unittest.TestCase):
                 names = archive.namelist()
                 allowed = {"handouter_zhiyun_collector/" + name for name in builder.ALLOW}
                 allowed |= {"handouter_zhiyun_collector/zhiyun_exporter.user.js", "handouter_zhiyun_collector/LICENSE"}
-                info = "handouter_zhiyun_collector-0.3.0.dev1.dist-info/"
+                info = "handouter_zhiyun_collector-0.3.0.dev2.dist-info/"
                 self.assertEqual(set(names), allowed | {info + name for name in ["METADATA", "WHEEL", "entry_points.txt", "collector-manifest.json", "RECORD"]})
                 metadata = archive.read(info + "METADATA").decode()
                 self.assertIn("License: LicenseRef-Proprietary", metadata)

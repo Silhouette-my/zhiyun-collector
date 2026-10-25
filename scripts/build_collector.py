@@ -14,7 +14,7 @@ import tempfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.3.0.dev1"
+VERSION = "0.3.0.dev2"
 CERTIFI_VERSION = "2026.7.22"
 PYWEBVIEW_VERSION = "6.1"
 KEYRING_VERSION = "25.6.0"
