@@ -1,0 +1,20 @@
+name: Manual native build
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python scripts/build_collector_plugin.py --output-dir dist/native
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zhiyun-collector-${{ runner.os }}-${{ runner.arch }}
+          path: dist/native/
