@@ -86,12 +86,24 @@ console.log(JSON.stringify([
   buildZipFilename('', null, 'x').filename,
 ]));
 """)
-        self.assertEqual(value[0], {"filename": "示例课程（H）2026_第1周_2026-09-17_周四第1-2节_资产包.zip", "level": "week"})
-        self.assertEqual(value[1], {"filename": "示例课程（H）2026_2026-09-17_周四第1-2节_资产包.zip", "level": "date"})
-        self.assertEqual(value[2]["filename"], "示例课程（H）2026_2026-09-17_周四_0800_资产包.zip")
-        self.assertEqual(value[3], {"filename": "示例课程（H）2026_20261104_0639_资产包.zip", "level": "export_time"})
-        self.assertEqual(value[4], "a_b_c__第1周_2026-09-17_周四第1-2节_资产包.zip")
-        self.assertEqual(value[5], "智云课程_x_资产包.zip")
+        # The page-title year ("…2026") is dropped so it does not run into "26-09-17".
+        self.assertEqual(value[0], {"filename": "示例课程（H）26-09-17_第一周_周四第1-2节.zip", "level": "week"})
+        self.assertEqual(value[1], {"filename": "示例课程（H）26-09-17_周四第1-2节.zip", "level": "date"})
+        self.assertEqual(value[2]["filename"], "示例课程（H）26-09-17_周四_0800.zip")
+        self.assertEqual(value[3], {"filename": "示例课程（H）_导出20261104_0639.zip", "level": "export_time"})
+        self.assertEqual(value[4], "a_b_c_26-09-17_第一周_周四第1-2节.zip")
+        self.assertEqual(value[5], "智云课程_导出x.zip")
+
+    def test_filename_prefers_api_course_title_and_chinese_week_numbers(self):
+        value = self._run("""
+const lesson = (week) => ({date: '2026-12-29', weekday: '周二', periods: '1-2', teachingWeek: week, courseTitle: '示例课程（H）'});
+console.log(JSON.stringify([
+  buildZipFilename('页面标题 2026', lesson(16), 'x').filename,
+  [1, 9, 10, 11, 17, 20, 21, 30].map(chineseNumber),
+]));
+""")
+        self.assertEqual(value[0], "示例课程（H）26-12-29_第十六周_周二第1-2节.zip")
+        self.assertEqual(value[1], ["一", "九", "十", "十一", "十七", "二十", "二十一", "三十"])
 
     def test_export_refuses_page_that_has_not_finished_loading(self):
         value = self._run("""
@@ -124,13 +136,14 @@ resolveLessonInfo({{lessonRecord: {record}, lectureDate: {lecture_date}}}).then(
 
     def test_resolve_reads_sub_info_and_catalogue(self):
         out = self._resolve(f"""
-  if (url.includes('get-sub-info')) return {{ok: true, json: async () => ({{data: {{sub_id: '202', sub_title: '2026-09-17第1-2节',
+  if (url.includes('get-sub-info')) return {{ok: true, json: async () => ({{data: {{sub_id: '202', sub_title: '2026-09-17第1-2节', course_title: '示例课程（H）',
       start_at: '{THU_0800}', end_at: '{THU_0800 + 5700}'}}}})}};
   return {{ok: true, json: async () => ({{result: {{data: [{{sub_id: '201', title: '2026-09-15第1-2节', start_at: '{TUE_0800}'}}]}}}})}};
 """, record="{subTitle: '2026-09-15第1-2节', startAt: null}")
         info = out["info"]
         self.assertEqual((info["date"], info["teachingWeek"], info["periods"]), ("2026-09-17", 1, "1-2"))
         self.assertEqual(info["termStartMonday"], "2026-09-14")
+        self.assertEqual(info["courseTitle"], "示例课程（H）")
         self.assertTrue(all(call["auth"] == "Bearer aa.bbb.cccc" for call in out["calls"]))
         self.assertEqual(out["calls"][0]["credentials"], "include")
         self.assertNotIn("aa.bbb.cccc", json.dumps(info))

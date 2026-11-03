@@ -58,7 +58,7 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(asset.slide_images, 1)
 
     def test_lesson_named_export_with_extra_lecture_metadata_still_converts(self):
-        archive = self.root / "合成课_第2周_2026-09-24_周四第1-2节_资产包.zip"
+        archive = self.root / "合成课26-09-24_第二周_周四第1-2节.zip"
         lecture = {"date": "2026-09-24", "weekday": "周四", "periods": "1-2", "teachingWeek": 2,
                    "teachingWeekBasis": "first_lesson_week", "termStartMonday": "2026-09-14"}
         with zipfile.ZipFile(archive, "w") as output:

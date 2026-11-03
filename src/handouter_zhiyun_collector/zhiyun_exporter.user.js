@@ -198,6 +198,7 @@
             if (!Array.isArray(item) && (typeof item.sub_title === 'string' || epochSecondsToShanghai(item.start_at))) {
                 const record = {
                     subTitle: typeof item.sub_title === 'string' ? item.sub_title : null,
+                    courseTitle: typeof item.course_title === 'string' ? item.course_title : null,
                     startAt: item.start_at ?? null,
                     endAt: item.end_at ?? null,
                 };
@@ -214,7 +215,7 @@
         return fallback;
     }
 
-    function buildLessonInfo({ subTitle = null, startAt = null, endAt = null, lectureDate = null,
+    function buildLessonInfo({ subTitle = null, courseTitle = null, startAt = null, endAt = null, lectureDate = null,
         termStartMonday = null, termStartBasis = null } = {}) {
         const start = epochSecondsToShanghai(startAt);
         const end = epochSecondsToShanghai(endAt);
@@ -235,6 +236,7 @@
             startAt: start ? start.iso : null,
             endAt: end ? end.iso : null,
             subTitle: typeof subTitle === 'string' && subTitle.trim() ? subTitle.trim().slice(0, 120) : null,
+            courseTitle: typeof courseTitle === 'string' && courseTitle.trim() ? courseTitle.trim().slice(0, 120) : null,
             teachingWeek: week,
             teachingWeekBasis: week ? termStartBasis : null,
             termStartMonday: week ? termMonday : null,
@@ -247,19 +249,36 @@
         return (text || fallback).slice(0, 80);
     }
 
-    // 课程名_第N周_YYYY-MM-DD_周X第a-b节_资产包.zip；缺周次省略周次段，缺节次用开课时间，
-    // 连日期都没有时退回导出时间（level = 'export_time'）。
+    // 1–99 的中文数字：1→一，10→十，12→十二，20→二十，21→二十一。
+    function chineseNumber(n) {
+        const digits = '零一二三四五六七八九';
+        if (!Number.isInteger(n) || n < 1 || n > 99) return String(n);
+        if (n < 10) return digits[n];
+        const tens = Math.floor(n / 10);
+        const ones = n % 10;
+        return `${tens === 1 ? '' : digits[tens]}十${ones ? digits[ones] : ''}`;
+    }
+
+    // 文件名用的课程名：优先接口的 course_title；否则去掉页面标题末尾的学年（如 "…（H）2026"），
+    // 以免和紧随其后的 "26-09-17" 粘成一串数字。
+    function filenameCourseName(courseName, lesson) {
+        const preferred = lesson && typeof lesson.courseTitle === 'string' ? lesson.courseTitle : '';
+        const text = (preferred || String(courseName || '')).trim().replace(/\s*20\d{2}$/, '');
+        return safeFilenamePart(text, '智云课程');
+    }
+
+    // 普通物理学Ⅱ（H）26-09-17_第一周_周四第1-2节.zip；缺周次省略周次段，缺节次用开课时间，
+    // 连日期都没有时用导出时间（level = 'export_time'）。
     function buildZipFilename(courseName, lesson, exportStamp) {
-        const name = safeFilenamePart(courseName, '智云课程');
+        const name = filenameCourseName(courseName, lesson);
         if (!lesson || !lesson.date) {
-            return { filename: `${name}_${exportStamp}_资产包.zip`, level: 'export_time' };
+            return { filename: `${name}_导出${exportStamp}.zip`, level: 'export_time' };
         }
-        const parts = [name];
-        if (lesson.teachingWeek) parts.push(`第${lesson.teachingWeek}周`);
-        parts.push(lesson.date);
+        const parts = [`${name}${lesson.date.slice(2)}`];
+        if (lesson.teachingWeek) parts.push(`第${chineseNumber(lesson.teachingWeek)}周`);
         const slot = (lesson.weekday || '') + (lesson.periods ? `第${lesson.periods}节` : (lesson.startTime ? `_${lesson.startTime}` : ''));
         if (slot) parts.push(slot);
-        return { filename: `${parts.join('_')}_资产包.zip`, level: lesson.teachingWeek ? 'week' : 'date' };
+        return { filename: `${parts.join('_')}.zip`, level: lesson.teachingWeek ? 'week' : 'date' };
     }
 
     // 连续快速导出时，回放页常常还没给出视频地址、PPT 切换时间也没加载；
@@ -576,6 +595,7 @@
             if (sub && sub.sub_id !== undefined && String(sub.sub_id) === subId) {
                 record = {
                     subTitle: typeof sub.sub_title === 'string' ? sub.sub_title : record.subTitle,
+                    courseTitle: typeof sub.course_title === 'string' ? sub.course_title : record.courseTitle,
                     startAt: epochSecondsToShanghai(sub.start_at) ? sub.start_at : record.startAt,
                     endAt: epochSecondsToShanghai(sub.end_at) ? sub.end_at : record.endAt,
                 };
@@ -592,6 +612,7 @@
         }
         return buildLessonInfo({
             subTitle: record.subTitle || null,
+            courseTitle: record.courseTitle || null,
             startAt: record.startAt || null,
             endAt: record.endAt || null,
             lectureDate: data.lectureDate,
