@@ -68,7 +68,7 @@ class ExporterContractTests(unittest.TestCase):
         self.assertEqual(self._lecture_date("({sub_title: '2026-06-16第1-2节'})"), '2026-06-16')
         self.assertEqual(self._lecture_date("({nested: {lectureDate: '2026年9月3日'}})"), '2026-09-03')
         self.assertIsNone(self._lecture_date("({sub_title: '2026-02-30第1-2节', exportDate: '2026-09-21'})"))
-        self.assertIn("lectureDate: data.lectureDate || null", self.source)
+        self.assertIn("lectureDate: lesson.date || data.lectureDate || null", self.source)
 
     def test_exporter_has_browser_memory_safety_limits(self):
         self.assertNotIn("document.querySelectorAll('*')", self.source)

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         浙大智云课堂全自动讲义资产打包导出器 (ZJU Zhiyun Lecture Exporter)
 // @namespace    https://github.com/michaeltan/zju-zhiyun-exporter
-// @version      1.4.2
+// @version      1.5.0
 // @description  导出智云课堂 PPT、已知切换时间与私有媒体来源为资产 ZIP，交给 Course Compiler 导入；讲义生成由后续 Agent 任务完成。
 // @author       Antigravity
 // @match        *://interactivemeta.cmc.zju.edu.cn/*
@@ -17,7 +17,7 @@
 (function () {
     'use strict';
 
-    console.log('[ZhiyunExporter v1.4.2] 启动中...');
+    console.log('[ZhiyunExporter v1.5.0] 启动中...');
 
     // Browser safety limits. Asset export runs inside the lecture page's renderer;
     // keep DOM traversal and image memory bounded so a large course cannot starve Chrome.
@@ -100,6 +100,166 @@
             }
         }
         return null;
+    }
+
+    // ---- 讲次（上课日期 / 周次 / 节次）识别 ----
+    // 智云接口给出的是：sub_title（如 "2026-09-17第1-2节"）、start_at / end_at
+    // （Unix 秒）。接口没有教学周字段：get-course-detail.sub_list 的第三层键是
+    // 当月第几周，不是教学周，因此周次只能按"学期第 1 周的周一"推算。
+    const SHANGHAI_OFFSET_MS = 8 * 3600 * 1000;
+    const WEEKDAY_NAMES = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+    const MAX_TEACHING_WEEK = 30;
+    const TERM_START_OVERRIDE_KEY = 'zhiyunExporter.termStartMonday';
+
+    function isoDateToUtcMs(day) {
+        if (typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+        const [year, month, date] = day.split('-').map(Number);
+        const ms = Date.UTC(year, month - 1, date);
+        const check = new Date(ms);
+        if (check.getUTCFullYear() !== year || check.getUTCMonth() !== month - 1 || check.getUTCDate() !== date) return null;
+        return ms;
+    }
+
+    function utcMsToIsoDate(ms) {
+        const d = new Date(ms);
+        return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+    }
+
+    // start_at 已知按秒；只接受 2000–2100 年范围内的秒值，不猜毫秒。
+    function epochSecondsToShanghai(value) {
+        const text = typeof value === 'number' ? String(value) : (typeof value === 'string' ? value.trim() : '');
+        if (!/^\d{9,10}$/.test(text)) return null;
+        const seconds = Number(text);
+        if (seconds < 946684800 || seconds >= 4102444800) return null;
+        const local = new Date(seconds * 1000 + SHANGHAI_OFFSET_MS);
+        const pad = (n) => String(n).padStart(2, '0');
+        const date = utcMsToIsoDate(local.getTime());
+        const hhmm = `${pad(local.getUTCHours())}${pad(local.getUTCMinutes())}`;
+        return {
+            date,
+            weekday: local.getUTCDay(),
+            hhmm,
+            iso: `${date}T${pad(local.getUTCHours())}:${pad(local.getUTCMinutes())}:${pad(local.getUTCSeconds())}+08:00`,
+        };
+    }
+
+    function parseLessonPeriods(value) {
+        if (typeof value !== 'string') return null;
+        const match = value.match(/第\s*(\d{1,2})\s*(?:[-~～—至到]\s*(\d{1,2})\s*)?节/);
+        if (!match) return null;
+        const first = Number(match[1]);
+        const last = match[2] ? Number(match[2]) : first;
+        if (first < 1 || last < first || last > 20) return null;
+        return first === last ? String(first) : `${first}-${last}`;
+    }
+
+    function mondayOf(day) {
+        const ms = isoDateToUtcMs(day);
+        if (ms === null) return null;
+        const weekday = new Date(ms).getUTCDay();
+        return utcMsToIsoDate(ms - ((weekday + 6) % 7) * 86400000);
+    }
+
+    function teachingWeekOf(day, termStartMonday) {
+        const dayMs = isoDateToUtcMs(day);
+        const startMs = isoDateToUtcMs(mondayOf(termStartMonday));
+        if (dayMs === null || startMs === null || dayMs < startMs) return null;
+        const week = Math.floor((dayMs - startMs) / (7 * 86400000)) + 1;
+        return week <= MAX_TEACHING_WEEK ? week : null;
+    }
+
+    // 课次目录（catalogue 的 result.data）中最早一节有效课所在周记为第 1 周。
+    function inferTermStartMonday(rows) {
+        if (!Array.isArray(rows)) return null;
+        let earliest = null;
+        for (const row of rows.slice(0, 1000)) {
+            if (!row || typeof row !== 'object') continue;
+            if (String(row.sub_delete ?? '0') !== '0' || row.sub_show === 'no') continue;
+            const start = epochSecondsToShanghai(row.start_at);
+            const day = start ? start.date : parseLectureDate(row.title || row.sub_title || '');
+            if (day && (earliest === null || day < earliest)) earliest = day;
+        }
+        return earliest ? mondayOf(earliest) : null;
+    }
+
+    // 在 Vue 状态里找当前讲次记录：带 sub_title 或 start_at 的对象；已知 sub_id 时优先匹配。
+    function extractLessonRecord(value, subId) {
+        if (!value || typeof value !== 'object') return null;
+        const queue = [{ value, depth: 0 }];
+        const seen = new Set();
+        let visited = 0;
+        let fallback = null;
+        while (queue.length && visited < 500) {
+            const current = queue.shift();
+            const item = current.value;
+            if (!item || typeof item !== 'object' || seen.has(item)) continue;
+            seen.add(item);
+            visited++;
+            if (!Array.isArray(item) && (typeof item.sub_title === 'string' || epochSecondsToShanghai(item.start_at))) {
+                const record = {
+                    subTitle: typeof item.sub_title === 'string' ? item.sub_title : null,
+                    startAt: item.start_at ?? null,
+                    endAt: item.end_at ?? null,
+                };
+                const itemSub = item.sub_id ?? item.id;
+                if (subId && itemSub !== undefined && String(itemSub) === String(subId)) return record;
+                if (!fallback && (!subId || itemSub === undefined)) fallback = record;
+            }
+            if (current.depth < 3) {
+                for (const child of Object.values(item)) {
+                    if (child && typeof child === 'object') queue.push({ value: child, depth: current.depth + 1 });
+                }
+            }
+        }
+        return fallback;
+    }
+
+    function buildLessonInfo({ subTitle = null, startAt = null, endAt = null, lectureDate = null,
+        termStartMonday = null, termStartBasis = null } = {}) {
+        const start = epochSecondsToShanghai(startAt);
+        const end = epochSecondsToShanghai(endAt);
+        let date = null;
+        let dateSource = null;
+        if (start) { date = start.date; dateSource = 'start_at'; }
+        else if (parseLectureDate(subTitle || '')) { date = parseLectureDate(subTitle); dateSource = 'sub_title'; }
+        else if (parseLectureDate(lectureDate || '')) { date = parseLectureDate(lectureDate); dateSource = 'page'; }
+        const weekdayIndex = date ? new Date(isoDateToUtcMs(date)).getUTCDay() : null;
+        const termMonday = termStartMonday ? mondayOf(termStartMonday) : null;
+        const week = date && termMonday ? teachingWeekOf(date, termMonday) : null;
+        return {
+            date,
+            dateSource,
+            weekday: weekdayIndex === null ? null : WEEKDAY_NAMES[weekdayIndex],
+            periods: parseLessonPeriods(subTitle || ''),
+            startTime: start ? start.hhmm : null,
+            startAt: start ? start.iso : null,
+            endAt: end ? end.iso : null,
+            subTitle: typeof subTitle === 'string' && subTitle.trim() ? subTitle.trim().slice(0, 120) : null,
+            teachingWeek: week,
+            teachingWeekBasis: week ? termStartBasis : null,
+            termStartMonday: week ? termMonday : null,
+        };
+    }
+
+    function safeFilenamePart(value, fallback) {
+        const text = String(value || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/\s+/g, ' ').trim()
+            .replace(/[. ]+$/, '');
+        return (text || fallback).slice(0, 80);
+    }
+
+    // 课程名_第N周_YYYY-MM-DD_周X第a-b节_资产包.zip；缺周次省略周次段，缺节次用开课时间，
+    // 连日期都没有时退回导出时间（level = 'export_time'）。
+    function buildZipFilename(courseName, lesson, exportStamp) {
+        const name = safeFilenamePart(courseName, '智云课程');
+        if (!lesson || !lesson.date) {
+            return { filename: `${name}_${exportStamp}_资产包.zip`, level: 'export_time' };
+        }
+        const parts = [name];
+        if (lesson.teachingWeek) parts.push(`第${lesson.teachingWeek}周`);
+        parts.push(lesson.date);
+        const slot = (lesson.weekday || '') + (lesson.periods ? `第${lesson.periods}节` : (lesson.startTime ? `_${lesson.startTime}` : ''));
+        if (slot) parts.push(slot);
+        return { filename: `${parts.join('_')}_资产包.zip`, level: lesson.teachingWeek ? 'week' : 'date' };
     }
 
     // 智能多字段提取图片直链
@@ -217,6 +377,8 @@
         let teacherName = '任课教师';
         let videoUrl = '';
         let lectureDate = null;
+        let lessonRecord = null;
+        const currentSubId = currentLessonIds().subId;
 
         try {
             // 1. 优先检查典型根容器中的真实视频地址（v.videoUrl / v.liveUrl / v.playUrl）
@@ -228,6 +390,7 @@
                     if (v.courseName && courseName === '智云课程') courseName = v.courseName;
                     if (v.teacherName) teacherName = v.teacherName;
                     if (!lectureDate) lectureDate = extractLectureDate(v);
+                    if (!lessonRecord) lessonRecord = extractLessonRecord(v, currentSubId);
                     if (!videoUrl && isUsableMediaUrl(v.videoUrl)) videoUrl = v.videoUrl;
                     if (!videoUrl && isUsableMediaUrl(v.liveUrl)) videoUrl = v.liveUrl;
                     if (!videoUrl && isUsableMediaUrl(v.playUrl)) videoUrl = v.playUrl;
@@ -261,6 +424,7 @@
                     if (v) {
                         if (v.courseName && !courseName) courseName = v.courseName;
                         if (!lectureDate) lectureDate = extractLectureDate(v);
+                        if (!lessonRecord) lessonRecord = extractLessonRecord(v, currentSubId);
                         if (!videoUrl && isUsableMediaUrl(v.videoUrl)) videoUrl = v.videoUrl;
                         if (!videoUrl && isUsableMediaUrl(v.liveUrl)) videoUrl = v.liveUrl;
                         if (!videoUrl && isUsableMediaUrl(v.playUrl)) videoUrl = v.playUrl;
@@ -316,8 +480,112 @@
             courseName: courseName || '智云课程',
             teacherName: teacherName || '教师',
             lectureDate: lectureDate || null,
+            lessonRecord: lessonRecord || null,
             videoUrl: videoUrl || ''
         };
+    }
+
+    // ---- 讲次元数据接口（只读，可选） ----
+    // 令牌只放进请求头，不写日志、不写入资产包；任何失败都退回页面状态。
+    const LESSON_META_TIMEOUT_MS = 8000;
+    const YJAPI_ORIGIN = 'https://yjapi.cmc.zju.edu.cn';
+
+    function readClassroomToken() {
+        try {
+            for (const part of (document.cookie || '').split(';')) {
+                const index = part.indexOf('=');
+                if (index < 0 || part.slice(0, index).trim() !== '_token') continue;
+                const decoded = decodeURIComponent(part.slice(index + 1));
+                const match = decoded.match(/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/);
+                if (match) return match[0];
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    function currentLessonIds() {
+        try {
+            const params = new URLSearchParams(window.location.search);
+            const courseId = params.get('course_id');
+            const subId = params.get('sub_id');
+            return {
+                courseId: courseId && /^\d{1,12}$/.test(courseId) ? courseId : null,
+                subId: subId && /^\d{1,12}$/.test(subId) ? subId : null,
+            };
+        } catch (e) {
+            return { courseId: null, subId: null };
+        }
+    }
+
+    async function fetchLessonJson(path, params, token) {
+        const query = new URLSearchParams(params).toString();
+        const origins = [window.location.origin, YJAPI_ORIGIN].filter((v, i, all) => v && all.indexOf(v) === i);
+        for (const origin of origins) {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), LESSON_META_TIMEOUT_MS);
+            try {
+                const sameOrigin = origin === window.location.origin;
+                const resp = await fetch(`${origin}${path}?${query}`, {
+                    signal: controller.signal,
+                    credentials: sameOrigin ? 'include' : 'omit',
+                    headers: Object.assign({ Accept: 'application/json' }, token ? { Authorization: `Bearer ${token}` } : {}),
+                });
+                if (resp.ok) {
+                    const json = await resp.json();
+                    if (json && typeof json === 'object') return json;
+                }
+            } catch (e) {
+                // Try the next origin; endpoint availability differs between Zhiyun hosts.
+            } finally {
+                clearTimeout(timer);
+            }
+        }
+        return null;
+    }
+
+    async function resolveLessonInfo(data) {
+        const { courseId, subId } = currentLessonIds();
+        let record = data.lessonRecord || {};
+        let termStartMonday = null;
+        let termStartBasis = null;
+        try {
+            const override = window.localStorage && window.localStorage.getItem(TERM_START_OVERRIDE_KEY);
+            if (override && mondayOf(override.trim())) {
+                termStartMonday = mondayOf(override.trim());
+                termStartBasis = 'user_override';
+            }
+        } catch (e) {}
+        if (courseId && subId) {
+            const token = readClassroomToken();
+            // 接口按 sub_id 精确返回当前讲次，优先于页面状态（页面里可能还有目录侧栏的其他讲次）。
+            const info = await fetchLessonJson('/courseapi/v3/portal-home-setting/get-sub-info',
+                { course_id: courseId, sub_id: subId }, token);
+            const sub = info && info.data && typeof info.data === 'object' ? info.data : null;
+            if (sub && sub.sub_id !== undefined && String(sub.sub_id) === subId) {
+                record = {
+                    subTitle: typeof sub.sub_title === 'string' ? sub.sub_title : record.subTitle,
+                    startAt: epochSecondsToShanghai(sub.start_at) ? sub.start_at : record.startAt,
+                    endAt: epochSecondsToShanghai(sub.end_at) ? sub.end_at : record.endAt,
+                };
+            }
+            if (!termStartMonday) {
+                const catalogue = await fetchLessonJson('/courseapi/v2/course/catalogue', { course_id: courseId }, token);
+                const rows = catalogue && catalogue.result && catalogue.result.data;
+                const inferred = inferTermStartMonday(rows);
+                if (inferred) {
+                    termStartMonday = inferred;
+                    termStartBasis = 'first_lesson_week';
+                }
+            }
+        }
+        return buildLessonInfo({
+            subTitle: record.subTitle || null,
+            startAt: record.startAt || null,
+            endAt: record.endAt || null,
+            lectureDate: data.lectureDate,
+            termStartMonday,
+            termStartBasis,
+        });
     }
 
     function saveBlobToFile(blob, filename) {
@@ -650,11 +918,16 @@
                 metaList.sort((a, b) => a.index - b.index);
                 zip.file('slides_meta.json', JSON.stringify(metaList, null, 2));
 
+                statusEl.textContent = '[*] 正在读取本讲上课日期与周次...';
+                const lesson = await resolveLessonInfo(data);
+
                 const courseInfo = {
                     schemaVersion: 2,
                     courseName: data.courseName || '智云课程',
                     teacherName: data.teacherName || '任课教师',
-                    lectureDate: data.lectureDate || null,
+                    lectureDate: lesson.date || data.lectureDate || null,
+                    // 附加字段：采集器只读取 courseName / lectureDate，其余供人和后续工具参考。
+                    lecture: lesson,
                     exportDate: new Date().toISOString(),
                     totalSlides: total,
                     validImages: validImageCount,
@@ -683,12 +956,18 @@
                     streamFiles: true
                 });
 
-                const safeName = courseInfo.courseName.replace(/[\\/:*?"<>|]/g, '_');
-                const zipFilename = `${safeName}_${getFormattedDate()}_资产包.zip`;
+                const naming = buildZipFilename(courseInfo.courseName, lesson, getFormattedDate());
 
-                saveBlobToFile(zipContent, zipFilename);
+                saveBlobToFile(zipContent, naming.filename);
                 const unknownTimes = metaList.filter((item) => item.seconds === null).length;
-                statusEl.textContent = `🎉 打包完成：PPT ${validImageCount}/${total} 张，未知时间 ${unknownTimes} 条。资产包含 private/ 来源信息，请仅本地保存。`;
+                const namingNote = {
+                    week: lesson.teachingWeekBasis === 'user_override'
+                        ? '文件名含上课日期与周次（周次按你设置的学期起始周一推算）。'
+                        : '文件名含上课日期与周次（周次按本课程第一节课所在周为第 1 周推算）。',
+                    date: '文件名含上课日期；未能推算周次。',
+                    export_time: '⚠️ 未识别到上课日期，文件名暂用导出时间。',
+                }[naming.level];
+                statusEl.textContent = `🎉 打包完成：PPT ${validImageCount}/${total} 张，未知时间 ${unknownTimes} 条。${namingNote}资产包含 private/ 来源信息，请仅本地保存。`;
             } catch (err) {
                 console.error(err);
                 statusEl.textContent = `❌ ${err.message}`;

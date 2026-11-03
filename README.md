@@ -14,6 +14,8 @@
 
 v1 用户也可以继续通过配套 [浏览器脚本](src/handouter_zhiyun_collector/zhiyun_exporter.user.js) 导出 ZIP，再由插件预检和转换。脚本 ZIP 含私有下载地址，只在本机保存，禁止上传或提交到仓库。
 
+浏览器 ZIP 按讲次命名：`课程名_第N周_YYYY-MM-DD_周X第a-b节_资产包.zip`。日期、开课时间和节次取自当前讲次的 `get-sub-info`（`start_at`/`end_at` 按北京时间换算，节次解析自 `sub_title`），接口不可用时退回页面状态。智云没有教学周字段，周次按课次目录（`course/catalogue`）中本课程第一节课所在周为第 1 周推算；如需按校历，可在课程页控制台执行 `localStorage.setItem('zhiyunExporter.termStartMonday', 'YYYY-MM-DD')` 指定第 1 周周一。推算不出周次时省略周次段，没有节次时改用开课时间，连上课日期也识别不到时退回原来的导出时间命名并在面板提示。同样的信息写入 `course_info.json` 的 `lecture` 字段；插件只读取 `courseName` 与 `lectureDate`，不依赖文件名。
+
 ## 在 TUI／命令行中使用
 
 TUI 不再内置网站解析或浏览器脚本。安装匹配平台的独立插件后，先导出配套脚本并注册一次：

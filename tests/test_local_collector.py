@@ -57,6 +57,26 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(asset.source_kind, "asset_zip")
         self.assertEqual(asset.slide_images, 1)
 
+    def test_lesson_named_export_with_extra_lecture_metadata_still_converts(self):
+        archive = self.root / "合成课_第2周_2026-09-24_周四第1-2节_资产包.zip"
+        lecture = {"date": "2026-09-24", "weekday": "周四", "periods": "1-2", "teachingWeek": 2,
+                   "teachingWeekBasis": "first_lesson_week", "termStartMonday": "2026-09-14"}
+        with zipfile.ZipFile(archive, "w") as output:
+            output.writestr("private/source.json", json.dumps({"videoUrl": "http://127.0.0.1/media.mp4?auth_key=SYNTHETIC_SECRET"}))
+            output.writestr("course_info.json", json.dumps({"schemaVersion": 2, "courseName": "合成课",
+                                                            "lectureDate": "2026-09-24", "lecture": lecture}))
+            output.writestr("slides_meta.json", json.dumps([{"index": 1, "filename": "slide_001.jpg", "seconds": 1}]))
+            output.writestr("slides/slide_001.jpg", b"\xff\xd8\xff" + b"0" * 20)
+        details = collector_module.inspect_export(archive)
+        self.assertEqual((details["course_title"], details["lecture_date"]), ("合成课", "2026-09-24"))
+        target = self.root / "standard.zip"
+        with patch.object(collector_module, "_media_request", return_value=_Response(b"\x00\x00\x00\x10ftypisom" + b"0" * 40)):
+            convert(archive, target, allowed_media_host="127.0.0.1", development_loopback=True)
+        with zipfile.ZipFile(target) as standard:
+            manifest = json.loads(standard.read("handouter-input.json"))
+        # The standard package keeps its closed lecture schema; week/period stay in the browser export only.
+        self.assertEqual(manifest["lecture"], {"course_title": "合成课", "lecture_date": "2026-09-24"})
+
     def test_missing_slide_fails_without_output(self):
         source = self.export(missing=True)
         target = self.root / "standard.zip"
