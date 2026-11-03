@@ -262,6 +262,18 @@
         return { filename: `${parts.join('_')}_资产包.zip`, level: lesson.teachingWeek ? 'week' : 'date' };
     }
 
+    // 连续快速导出时，回放页常常还没给出视频地址、PPT 切换时间也没加载；
+    // 这样的包采集器无法使用，宁可不生成，提示用户等页面加载完再打包。
+    function exportReadinessProblem(mediaUrl, timings) {
+        if (!isUsableMediaUrl(mediaUrl)) {
+            return '页面尚未加载出回放视频地址，未生成资产包。请等视频开始播放、PPT 列表加载完成后再点打包。';
+        }
+        if (Array.isArray(timings) && timings.length > 0 && timings.every((t) => !t || t.seconds === null)) {
+            return `PPT ${timings.length} 页都还没有切换时间，可能是页面未加载完或仍是上一讲的列表，未生成资产包。请刷新本讲页面、展开 PPT 栏并等待加载后重试。`;
+        }
+        return null;
+    }
+
     // 智能多字段提取图片直链
     function extractPptUrl(item) {
         if (!item) return '';
@@ -857,12 +869,6 @@
                 if (total > MAX_SLIDES_PER_EXPORT) {
                     throw new Error(`PPT 共 ${total} 页，超过单次安全上限 ${MAX_SLIDES_PER_EXPORT} 页；请分课程/讲次导出，避免浏览器内存峰值过高。`);
                 }
-                statusEl.textContent = `[*] 正在抓取 ${total} 页 PPT 高清图（低内存模式）...`;
-
-                const zip = new JSZip();
-                const slidesFolder = zip.folder('slides');
-                const metaList = [];
-
                 // 准备任务
                 const tasks = data.pptList.map((ppt, i) => {
                     const url = extractPptUrl(ppt);
@@ -874,6 +880,17 @@
                         filename: `slide_${String(i + 1).padStart(3, '0')}.jpg`
                     };
                 });
+
+                const fallbackVideo = document.querySelector('video')?.src || '';
+                const mediaUrl = data.videoUrl || (isUsableMediaUrl(fallbackVideo) ? fallbackVideo : '');
+                const notReady = exportReadinessProblem(mediaUrl, tasks.map((task) => task.timing));
+                if (notReady) throw new Error(notReady);
+
+                statusEl.textContent = `[*] 正在抓取 ${total} 页 PPT 高清图（低内存模式）...`;
+
+                const zip = new JSZip();
+                const slidesFolder = zip.folder('slides');
+                const metaList = [];
 
                 let validImageCount = 0;
                 let totalImageBytes = 0;
@@ -938,9 +955,8 @@
 
                 // 签名媒体 URL 与具体回放页只放 private/，Handouter 的 Agent
                 // 交接流程不会导入该目录。资产包本身仍应按私有文件保存。
-                const fallbackVideo = document.querySelector('video')?.src || '';
                 const privateSource = {
-                    videoUrl: data.videoUrl || (isUsableMediaUrl(fallbackVideo) ? fallbackVideo : ''),
+                    videoUrl: mediaUrl,
                     pageUrl: window.location.href
                 };
                 zip.folder('private').file('source.json', JSON.stringify(privateSource, null, 2));

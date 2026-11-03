@@ -207,6 +207,28 @@ class CollectorProtocolTests(unittest.TestCase):
         self.assertEqual(frames[-1]["type"], "error")
         self.assertNotIn("PRIVATE_SYNTHETIC", wire)
 
+    def test_export_without_media_address_reports_specific_code(self):
+        for value in ("", "   ", None):
+            payload = {"pageUrl": "https://classroom.example.test/livingroom?course_id=1&sub_id=2"}
+            if value is not None:
+                payload["videoUrl"] = value
+            self.replace_export_members({"private/source.json": json.dumps(payload).encode()})
+            code, frames, wire = self.invoke({"protocol_version": 1, "method": "inspect",
+                                              "params": {"source_path": str(self.source)}})
+            self.assertNotEqual(code, 0)
+            self.assertEqual(frames, [{"type": "error", "code": "COLLECTOR_NO_MEDIA",
+                                       "message": protocol.ERROR_MESSAGE}])
+            self.assertNotIn("classroom.example.test", wire)
+        with self.assertRaises(collector.CollectorError) as caught:
+            collector._validate_media_url("", allowed_host="media.example.test", development_loopback=False)
+        self.assertEqual(caught.exception.code, "COLLECTOR_NO_MEDIA")
+
+    def test_invalid_media_address_keeps_generic_code(self):
+        self.replace_export_members({"private/source.json": json.dumps({"videoUrl": "ftp://media.example.test/x"}).encode()})
+        _, frames, _ = self.invoke({"protocol_version": 1, "method": "inspect",
+                                    "params": {"source_path": str(self.source)}})
+        self.assertEqual(frames[-1]["code"], "COLLECTOR_FAILED")
+
     def test_unknown_fields_fail_closed(self):
         code, frames, wire = self.invoke({"protocol_version": 1, "method": "identity",
                                           "params": {}, "extra": "ignored?"})

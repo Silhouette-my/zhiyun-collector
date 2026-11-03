@@ -112,7 +112,7 @@ Course Compiler 的采集插件是独立安装的本机程序。开发者可以�
 
 成功终态：`{"type":"result","output_path":"/absolute/new-standard.zip"}`，随后以退出码 0 结束。必须先完整关闭并原子发布标准包，再发送成功帧。包遵循 [本地资产规范](STANDARD_PACKAGE.md)，只含已落地资源，不含原始私有包、URL、Cookie、程序和采集配置。桌面还会运行完整 `local_inspect`，协议成功不等于导入成功。
 
-失败终态：`{"type":"error","code":"COLLECTOR_FAILED","message":"采集未完成，请检查授权后重试"}`，随后非零退出。不能输出异常原文；桌面只显示自己的固定脱敏提示。失败或中断不得发布半成品，不得删除源文件。客户端可终止整个进程树；插件应在输出目录中暂存，支持中断后清理，不在用户其他目录遗留私有副本。
+失败终态：`{"type":"error","code":"COLLECTOR_FAILED","message":"采集未完成，请检查授权后重试"}`，随后非零退出。`0.3.0.dev2` 起，若浏览器包的 `private/source.json` 缺少媒体地址（`videoUrl` 缺失或为空，通常是页面未加载完就导出），`inspect`/`convert` 改用 `"code":"COLLECTOR_NO_MEDIA"`，`message` 不变；其他失败仍为 `COLLECTOR_FAILED`，客户端应把未知错误码当作 `COLLECTOR_FAILED` 处理。不能输出异常原文；桌面只显示自己的固定脱敏提示。失败或中断不得发布半成品，不得删除源文件。客户端可终止整个进程树；插件应在输出目录中暂存，支持中断后清理，不在用户其他目录遗留私有副本。
 
 ## 开发与发行验证
 

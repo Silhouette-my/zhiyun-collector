@@ -35,7 +35,15 @@ PACKAGE_DATE_TIME = (1980, 1, 1, 0, 0, 0)
 
 
 class CollectorError(ValueError):
-    pass
+    """Collector failure; ``code`` is a fixed, URL-free protocol error code."""
+
+    def __init__(self, message: str = "", code: str = "COLLECTOR_FAILED"):
+        super().__init__(message)
+        self.code = code
+
+
+# The export ZIP was saved before the lecture page exposed its media address.
+NO_MEDIA = "COLLECTOR_NO_MEDIA"
 
 
 def _sha256(path: Path) -> str:
@@ -102,6 +110,8 @@ def inspect_export(export_zip: str | Path, *, require_https: bool = False) -> di
     if not isinstance(private, dict) or not isinstance(course, dict):
         raise CollectorError("浏览器资产包元数据格式无效")
     raw_url = private.get("videoUrl")
+    if raw_url is None or (isinstance(raw_url, str) and not raw_url.strip()):
+        raise CollectorError("浏览器资产包缺少媒体地址", NO_MEDIA)
     if not isinstance(raw_url, str) or len(raw_url) > 8192:
         raise CollectorError("浏览器资产包缺少有效媒体信息")
     parts = urllib.parse.urlsplit(raw_url)
@@ -206,7 +216,9 @@ def _resolved_host(host: str) -> str:
 
 
 def _validate_media_url(value: object, *, allowed_host: str, development_loopback: bool) -> str:
-    if not isinstance(value, str) or not value or len(value) > 8192:
+    if value is None or (isinstance(value, str) and not value.strip()):
+        raise CollectorError("浏览器资产包没有可用媒体直链", NO_MEDIA)
+    if not isinstance(value, str) or len(value) > 8192:
         raise CollectorError("浏览器资产包没有可用媒体直链")
     parts = urllib.parse.urlsplit(value)
     if parts.scheme != "https" or parts.username or parts.password or parts.fragment or not parts.hostname:

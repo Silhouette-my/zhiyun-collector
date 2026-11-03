@@ -134,7 +134,7 @@ def run() -> int:
         return 0
     except (ProtocolError, CollectorError, OSError, ValueError) as exc:
         from .direct import DirectError
-        code = exc.code if isinstance(exc, DirectError) else "COLLECTOR_FAILED"
+        code = exc.code if isinstance(exc, (DirectError, CollectorError)) else "COLLECTOR_FAILED"
         _emit({"type": "error", "code": code, "message": ERROR_MESSAGE})
         return 1
     except Exception:

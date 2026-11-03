@@ -93,6 +93,22 @@ console.log(JSON.stringify([
         self.assertEqual(value[4], "a_b_c__第1周_2026-09-17_周四第1-2节_资产包.zip")
         self.assertEqual(value[5], "智云课程_x_资产包.zip")
 
+    def test_export_refuses_page_that_has_not_finished_loading(self):
+        value = self._run("""
+const known = {seconds: 12}, unknown = {seconds: null};
+console.log(JSON.stringify([
+  exportReadinessProblem('', [known]),
+  exportReadinessProblem('blob:https://example.invalid/1', [known]),
+  exportReadinessProblem('https://media.example.invalid/v.mp4', [unknown, unknown]),
+  exportReadinessProblem('https://media.example.invalid/v.mp4', [unknown, known]),
+  exportReadinessProblem('https://media.example.invalid/v.mp4', []),
+]));
+""")
+        self.assertIn("视频地址", value[0])
+        self.assertIn("视频地址", value[1])
+        self.assertIn("切换时间", value[2])
+        self.assertEqual(value[3:], [None, None])
+
     def _resolve(self, fetch_body: str, *, override: str = "null", record: str = "null", lecture_date: str = "null"):
         return self._run(f"""
 const calls = [];
