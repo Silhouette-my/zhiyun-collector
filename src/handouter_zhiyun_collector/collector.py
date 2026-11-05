@@ -15,6 +15,8 @@ from pathlib import Path, PurePosixPath
 import re
 import socket
 import ssl
+import stat
+import sys
 import tempfile
 import time
 import urllib.parse
@@ -32,6 +34,13 @@ MAX_SEGMENTS = 10_000
 CHUNK = 1024 * 1024
 # Earliest ZIP timestamp; used for every member so packaging is deterministic.
 PACKAGE_DATE_TIME = (1980, 1, 1, 0, 0, 0)
+# Staging directories live beside the output so a killed run never leaves a
+# private copy elsewhere. A later run in the same directory removes leftovers
+# that have not been touched for this long (an active download keeps writing).
+STAGING_PREFIX = ".handouter-collector-"
+STAGING_FILES = {"lecture.mp4", "lecture.ts", "standard.zip"}
+STALE_STAGING_SECONDS = 24 * 3600
+_WINDOWS = sys.platform == "win32"
 
 
 class CollectorError(ValueError):
@@ -324,8 +333,17 @@ def _playlist_urls(text: str, base: str, allowed_host: str, development_loopback
     return kind, urls
 
 
+def _content_length(response) -> int | None:
+    value = str(response.headers.get("Content-Length", "") or "").strip()
+    if not re.fullmatch(r"[0-9]{1,15}", value):
+        return None
+    length = int(value)
+    return length if length > 0 else None
+
+
 def _download_media(url: str, temporary_root: Path, allowed_host: str,
-                    development_loopback: bool) -> Path:
+                    development_loopback: bool, on_bytes=None) -> Path:
+    """Land the confirmed media; ``on_bytes(completed, total_or_None)`` sees every chunk."""
     current = url
     for depth in range(2):
         try:
@@ -346,12 +364,15 @@ def _download_media(url: str, temporary_root: Path, allowed_host: str,
                         raise CollectorError("媒体响应不是直接视频或HLS")
                     output = temporary_root / "lecture.mp4"
                     total = 0
+                    expected = _content_length(response)
                     with output.open("xb") as target:
                         while block := response.read(CHUNK):
                             total += len(block)
                             if total > MAX_MEDIA:
                                 raise CollectorError("媒体文件超过本地长课预算")
                             target.write(block)
+                            if on_bytes:
+                                on_bytes(total, expected if expected and expected >= total else None)
                     with output.open("rb") as stream:
                         header = stream.read(12)
                     if len(header) < 8 or header[4:8] != b"ftyp":
@@ -383,6 +404,9 @@ def _download_media(url: str, temporary_root: Path, allowed_host: str,
                                 raise CollectorError("HLS分段不是MPEG-TS")
                             first = False
                             target.write(block)
+                            if on_bytes:
+                                # Segment sizes are only known one by one; the overall total is not.
+                                on_bytes(total, None)
                         if not segment_bytes:
                             raise CollectorError("HLS分段为空")
                 except OSError as exc:
@@ -393,7 +417,7 @@ def _download_media(url: str, temporary_root: Path, allowed_host: str,
 
 def convert(export_zip: str | Path, output_zip: str | Path, *, allowed_media_host: str,
             development_loopback: bool = False, expected_source_sha256: str | None = None,
-            progress=None) -> dict:
+            progress=None, on_bytes=None) -> dict:
     source = Path(export_zip).expanduser()
     target = Path(output_zip).expanduser()
     if source.is_symlink() or not source.is_file() or target.exists() or target.is_symlink():
@@ -403,12 +427,12 @@ def convert(export_zip: str | Path, output_zip: str | Path, *, allowed_media_hos
     with source.open("rb") as source_stream:
         return _convert_stream(source_stream, target, allowed_media_host=allowed_media_host,
             development_loopback=development_loopback, expected_source_sha256=expected_source_sha256,
-            progress=progress)
+            progress=progress, on_bytes=on_bytes)
 
 
 def _convert_stream(source_stream, target: Path, *, allowed_media_host: str,
                     development_loopback: bool = False, expected_source_sha256: str | None = None,
-                    media_url: str | None = None, progress=None) -> dict:
+                    media_url: str | None = None, progress=None, on_bytes=None) -> dict:
     """Shared conversion core; direct acquisition keeps private metadata in memory."""
     if target.exists() or target.is_symlink():
         raise CollectorError("输出必须是新文件")
@@ -479,11 +503,12 @@ def _convert_stream(source_stream, target: Path, *, allowed_media_host: str,
                            "start_ms": start, "end_ms": None})
         if expected_source_sha256 and _sha256_stream(source_stream) != expected_source_sha256:
             raise CollectorError("浏览器资产包在预检后已更改")
-    with tempfile.TemporaryDirectory(prefix=".handouter-collector-", dir=target.parent) as temporary:
+    remove_stale_staging(target.parent)
+    with tempfile.TemporaryDirectory(prefix=STAGING_PREFIX, dir=target.parent) as temporary:
         temporary_root = Path(temporary)
         if progress:
             progress("downloading")
-        media = _download_media(url, temporary_root, allowed_media_host, development_loopback)
+        media = _download_media(url, temporary_root, allowed_media_host, development_loopback, on_bytes)
         media_name = "media/lecture" + media.suffix
         manifest = {"schema_version": 1, "lecture": {"course_title": title.strip(), "lecture_date": day},
                     "media": {"path": media_name}}
@@ -513,6 +538,56 @@ def _convert_stream(source_stream, target: Path, *, allowed_media_host: str,
         # Exclusive publish; no signed URL or private/ member enters the result.
         if progress:
             progress("publishing")
-        os.link(staged_zip, target)
+        _publish(staged_zip, target)
         return {"output": str(target), "media_bytes": media.stat().st_size,
                 "slide_images": len(images), "slide_events": len(events), "schema_version": 1}
+
+
+def _publish(staged: Path, target: Path) -> None:
+    """Publish without ever replacing an existing file."""
+    try:
+        os.link(staged, target)
+    except FileExistsError:
+        raise
+    except OSError:
+        # FAT/exFAT volumes and some network shares have no hard links. On
+        # Windows a rename onto an existing name fails, so it stays exclusive.
+        if not _WINDOWS:
+            raise
+        os.rename(staged, target)
+
+
+def remove_stale_staging(parent: Path, *, now: float | None = None) -> None:
+    """Best effort: drop staging left by a killed run; never touch anything else.
+
+    Only directories carrying the collector prefix that hold nothing but the
+    collector's own regular staging files, none modified within
+    ``STALE_STAGING_SECONDS``, are removed. Errors (e.g. files still open on
+    Windows) leave the directory in place.
+    """
+    now = time.time() if now is None else now
+    try:
+        candidates = list(Path(parent).glob(STAGING_PREFIX + "*"))
+    except OSError:
+        return
+    for candidate in candidates:
+        try:
+            if candidate.is_symlink() or not candidate.is_dir() or _is_reparse_point(candidate):
+                continue
+            entries = list(candidate.iterdir())
+            if any(entry.name not in STAGING_FILES or entry.is_symlink() or not entry.is_file()
+                   or _is_reparse_point(entry) for entry in entries):
+                continue
+            newest = max([candidate.stat().st_mtime, *(entry.stat().st_mtime for entry in entries)])
+            if now - newest < STALE_STAGING_SECONDS:
+                continue
+            for entry in entries:
+                entry.unlink()
+            candidate.rmdir()
+        except OSError:
+            continue
+
+
+def _is_reparse_point(path: Path) -> bool:
+    attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))

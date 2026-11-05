@@ -65,8 +65,8 @@ class CollectorProtocolTests(unittest.TestCase):
         code, frames, _ = self.invoke({"protocol_version": 1, "method": "identity", "params": {}})
         self.assertEqual(code, 0)
         self.assertEqual(frames, [{"type": "identity", "tool_id": "handouter-zhiyun-collector",
-                                   "protocol_version": 1, "tool_version": "0.3.0.dev2",
-                                   "capabilities": ["inspect", "convert"]}])
+                                   "protocol_version": 1, "tool_version": "0.3.0.dev3",
+                                   "capabilities": ["inspect", "convert", "progress_bytes"]}])
 
     def test_inspection_returns_host_and_hash_but_never_signed_url(self):
         code, frames, wire = self.invoke({"protocol_version": 1, "method": "inspect",
