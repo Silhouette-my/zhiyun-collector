@@ -83,6 +83,20 @@ class ExporterContractTests(unittest.TestCase):
         self.assertIn("status: downloaded ? 'ok' : 'missing_image'", self.source)
         self.assertIn("zip.folder('private').file('source.json'", self.source)
 
+    def test_half_loaded_page_is_refused_before_any_slide_fetch_or_save(self):
+        # The export button refuses before fetching slides, building a ZIP or saving a file;
+        # the catch block shows the reason in the panel.
+        start = self.source.index("exportZipBtn.onclick = async")
+        handler = self.source[start:self.source.index("        };", self.source.index("} catch (err) {", start))]
+        check = handler.index("const notReady = exportReadinessProblem(mediaUrl, tasks.map((task) => task.timing));")
+        refuse = handler.index("if (notReady) throw new Error(notReady);")
+        self.assertLess(check, refuse)
+        for later in ("new JSZip()", "runConcurrentTasks(", "fetchImageBlob(", "zip.generateAsync(", "saveBlobToFile("):
+            self.assertLess(refuse, handler.index(later), later)
+        self.assertIn("statusEl.textContent = `❌ ${err.message}`;", handler)
+        # The same media address that passed the check is the one written to private/source.json.
+        self.assertIn("videoUrl: mediaUrl,", handler)
+
     def test_userscript_syntax(self):
         subprocess.run([shutil.which("node"), "--check", str(SCRIPT)], check=True)
 
