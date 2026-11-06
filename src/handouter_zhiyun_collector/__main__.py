@@ -8,6 +8,18 @@ import sys
 from .collector import CollectorError, convert, inspect_export
 
 
+def _print_json(value) -> None:
+    """Print one JSON line; fall back to ASCII escapes on a narrow console code page.
+
+    On Chinese Windows a piped stdout is usually GBK, which cannot encode every
+    title or path. The ASCII form is the same JSON value, so callers still parse it.
+    """
+    try:
+        print(json.dumps(value, ensure_ascii=False))
+    except UnicodeEncodeError:
+        print(json.dumps(value))
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv == ["protocol"]:
@@ -34,7 +46,7 @@ def main(argv=None):
                 result = {"output_path": str(output)}
         except (CollectorError, OSError, ValueError):
             parser.exit(1, "Operation failed; existing files unchanged. Check input and output paths.\n")
-        print(json.dumps(result, ensure_ascii=False))
+        _print_json(result)
         return 0
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--browser-export", required=True)
@@ -46,7 +58,7 @@ def main(argv=None):
         result = convert(args.browser_export, args.output, allowed_media_host=args.allowed_media_host)
     except (CollectorError, OSError, ValueError):
         parser.exit(1, "Collection failed; input unchanged. Check export, access and media host.\n")
-    print(json.dumps(result, ensure_ascii=False))
+    _print_json(result)
     return 0
 
 

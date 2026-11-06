@@ -57,6 +57,26 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(asset.source_kind, "asset_zip")
         self.assertEqual(asset.slide_images, 1)
 
+    def test_lesson_named_export_with_extra_lecture_metadata_still_converts(self):
+        archive = self.root / "合成课26-09-24_第二周_周四第1-2节.zip"
+        lecture = {"date": "2026-09-24", "weekday": "周四", "periods": "1-2", "teachingWeek": 2,
+                   "teachingWeekBasis": "first_lesson_week", "termStartMonday": "2026-09-14"}
+        with zipfile.ZipFile(archive, "w") as output:
+            output.writestr("private/source.json", json.dumps({"videoUrl": "http://127.0.0.1/media.mp4?auth_key=SYNTHETIC_SECRET"}))
+            output.writestr("course_info.json", json.dumps({"schemaVersion": 2, "courseName": "合成课",
+                                                            "lectureDate": "2026-09-24", "lecture": lecture}))
+            output.writestr("slides_meta.json", json.dumps([{"index": 1, "filename": "slide_001.jpg", "seconds": 1}]))
+            output.writestr("slides/slide_001.jpg", b"\xff\xd8\xff" + b"0" * 20)
+        details = collector_module.inspect_export(archive)
+        self.assertEqual((details["course_title"], details["lecture_date"]), ("合成课", "2026-09-24"))
+        target = self.root / "standard.zip"
+        with patch.object(collector_module, "_media_request", return_value=_Response(b"\x00\x00\x00\x10ftypisom" + b"0" * 40)):
+            convert(archive, target, allowed_media_host="127.0.0.1", development_loopback=True)
+        with zipfile.ZipFile(target) as standard:
+            manifest = json.loads(standard.read("handouter-input.json"))
+        # The standard package keeps its closed lecture schema; week/period stay in the browser export only.
+        self.assertEqual(manifest["lecture"], {"course_title": "合成课", "lecture_date": "2026-09-24"})
+
     def test_missing_slide_fails_without_output(self):
         source = self.export(missing=True)
         target = self.root / "standard.zip"
@@ -136,6 +156,56 @@ class CollectorTests(unittest.TestCase):
                 self.assertEqual(connect.call_args.args[0], (address, 443))
                 self.assertEqual(seen["host"], "media.example.test")
                 self.assertEqual(seen["context"].verify_mode, __import__("ssl").CERT_REQUIRED)
+
+    def test_hls_download_resolves_the_host_once_and_pins_it(self):
+        playlist = b"#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nseg1.ts\n#EXTINF:1,\nseg2.ts\n#EXTINF:1,\nseg3.ts\n#EXT-X-ENDLIST\n"
+        bodies = {"/play.m3u8": (playlist, "application/vnd.apple.mpegurl")}
+        bodies.update({f"/seg{n}.ts": (b"\x47" + bytes([n]) * 187, "video/mp2t") for n in (1, 2, 3)})
+        connected = []
+        class FakeResponse(io.BytesIO):
+            status = 200
+            def __init__(self, path):
+                data, kind = bodies[path]
+                super().__init__(data)
+                self.headers = {"Content-Type": kind, "Content-Length": str(len(data))}
+        class FakeConnection:
+            def __init__(self, *_args, **_kwargs): pass
+            def request(self, _method, path, *, headers):
+                self.path = path
+                self._create_connection(("media.example.test", 443), 60)
+            def getresponse(self): return FakeResponse(self.path)
+            def close(self): pass
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(collector_module, "_resolved_host", return_value="93.184.216.34") as resolve, \
+             patch("socket.create_connection", side_effect=lambda address, *_: connected.append(address)), \
+             patch("http.client.HTTPSConnection", FakeConnection):
+            output = collector_module._download_media("https://media.example.test/play.m3u8", Path(directory),
+                                                      "media.example.test", False)
+            self.assertEqual(output.read_bytes()[:1], b"\x47")
+        self.assertEqual(resolve.call_count, 1)
+        self.assertEqual(connected, [("93.184.216.34", 443)] * 4)  # playlist + 3 segments
+        self.assertIsNone(collector_module._RESOLVED)
+
+    def test_redirect_status_is_rejected_and_connection_closed(self):
+        closed = []
+        for status in (301, 302, 307, 308, 403):
+            class FakeResponse:
+                headers = {"Location": "https://elsewhere.example.test/x.mp4"}
+                def close(self): closed.append("response")
+                def read(self, amount): return b""
+            FakeResponse.status = status
+            class FakeConnection:
+                def __init__(self, *_args, **_kwargs): pass
+                def request(self, *_args, **_kwargs): pass
+                def getresponse(self): return FakeResponse()
+                def close(self): closed.append("connection")
+            with self.subTest(status=status), \
+                 patch("socket.getaddrinfo", return_value=[(2, 1, 6, "", ("93.184.216.34", 0))]), \
+                 patch("http.client.HTTPSConnection", FakeConnection):
+                with self.assertRaisesRegex(collector_module.CollectorError, "重定向"):
+                    collector_module._media_request("https://media.example.test/lecture.mp4", "media.example.test", False)
+        self.assertGreaterEqual(closed.count("connection"), 5)
+        self.assertEqual(closed.count("response"), 5)
 
 
 if __name__ == "__main__":

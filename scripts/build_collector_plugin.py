@@ -76,7 +76,7 @@ def main():
         if (len(frames) != 1 or frames[0].get('type') != 'identity'
                 or frames[0].get('tool_id') != 'handouter-zhiyun-collector'
                 or frames[0].get('protocol_version') != 1 or frames[0].get('tool_version') != VERSION
-                or frames[0].get('capabilities') != ['inspect', 'convert']):
+                or frames[0].get('capabilities') != ['inspect', 'convert', 'progress_bytes']):
             raise RuntimeError('Collector identity probe failed')
         request_v2 = json.dumps({'protocol_version': 2, 'method': 'identity', 'params': {}}).encode() + b'\n'
         probe_v2 = subprocess.run([str(binary), 'protocol'], input=request_v2, capture_output=True,
@@ -84,7 +84,7 @@ def main():
         identity_v2 = json.loads(probe_v2.stdout)
         if (identity_v2.get('protocol_version') != 2 or identity_v2.get('tool_version') != VERSION
                 or identity_v2.get('tool_id') != 'handouter-zhiyun-collector'
-                or identity_v2.get('capabilities') != ['auth_status', 'auth_login', 'auth_logout', 'catalog', 'plan', 'collect']):
+                or identity_v2.get('capabilities') != ['auth_status', 'auth_login', 'auth_logout', 'catalog', 'plan', 'collect', 'progress_bytes']):
             raise RuntimeError('Collector v2 identity probe failed')
         data = binary.read_bytes()
         with (destination / name).open('xb') as stream:

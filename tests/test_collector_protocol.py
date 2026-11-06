@@ -14,7 +14,7 @@ from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import zipfile
 
-from handouter_zhiyun_collector import collector, protocol
+from handouter_zhiyun_collector import __version__, collector, protocol
 from package_assertions import inspect
 
 
@@ -65,8 +65,8 @@ class CollectorProtocolTests(unittest.TestCase):
         code, frames, _ = self.invoke({"protocol_version": 1, "method": "identity", "params": {}})
         self.assertEqual(code, 0)
         self.assertEqual(frames, [{"type": "identity", "tool_id": "handouter-zhiyun-collector",
-                                   "protocol_version": 1, "tool_version": "0.3.0.dev2",
-                                   "capabilities": ["inspect", "convert"]}])
+                                   "protocol_version": 1, "tool_version": __version__,
+                                   "capabilities": ["inspect", "convert", "progress_bytes"]}])
 
     def test_inspection_returns_host_and_hash_but_never_signed_url(self):
         code, frames, wire = self.invoke({"protocol_version": 1, "method": "inspect",
@@ -206,6 +206,28 @@ class CollectorProtocolTests(unittest.TestCase):
         self.assertFalse(target.exists())
         self.assertEqual(frames[-1]["type"], "error")
         self.assertNotIn("PRIVATE_SYNTHETIC", wire)
+
+    def test_export_without_media_address_reports_specific_code(self):
+        for value in ("", "   ", None):
+            payload = {"pageUrl": "https://classroom.example.test/livingroom?course_id=1&sub_id=2"}
+            if value is not None:
+                payload["videoUrl"] = value
+            self.replace_export_members({"private/source.json": json.dumps(payload).encode()})
+            code, frames, wire = self.invoke({"protocol_version": 1, "method": "inspect",
+                                              "params": {"source_path": str(self.source)}})
+            self.assertNotEqual(code, 0)
+            self.assertEqual(frames, [{"type": "error", "code": "COLLECTOR_NO_MEDIA",
+                                       "message": protocol.ERROR_MESSAGE}])
+            self.assertNotIn("classroom.example.test", wire)
+        with self.assertRaises(collector.CollectorError) as caught:
+            collector._validate_media_url("", allowed_host="media.example.test", development_loopback=False)
+        self.assertEqual(caught.exception.code, "COLLECTOR_NO_MEDIA")
+
+    def test_invalid_media_address_keeps_generic_code(self):
+        self.replace_export_members({"private/source.json": json.dumps({"videoUrl": "ftp://media.example.test/x"}).encode()})
+        _, frames, _ = self.invoke({"protocol_version": 1, "method": "inspect",
+                                    "params": {"source_path": str(self.source)}})
+        self.assertEqual(frames[-1]["code"], "COLLECTOR_FAILED")
 
     def test_unknown_fields_fail_closed(self):
         code, frames, wire = self.invoke({"protocol_version": 1, "method": "identity",

@@ -1,0 +1,101 @@
+name: Release
+# Pushing a version tag (v + handouter_zhiyun_collector.__version__, e.g. v0.3.0) builds the native
+# plugin on Windows and macOS and publishes a GitHub Release with SHA256SUMS.
+# Only the final job can write to the repository.
+on:
+  push:
+    tags:
+      - 'v*'
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check tag matches package version
+        shell: bash
+        run: |
+          version=$(python -c "import sys; sys.path.insert(0, 'src'); import handouter_zhiyun_collector as p; print(p.__version__)")
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package version $version"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Synthetic tests
+        shell: bash
+        run: |
+          python -m pip install certifi==2026.7.22
+          python -m unittest discover -s tests -v
+          node --check src/handouter_zhiyun_collector/zhiyun_exporter.user.js
+        env:
+          PYTHONPATH: src
+      - name: Build native plugin
+        run: python scripts/build_collector_plugin.py --output-dir dist/native
+      - name: Package release asset
+        run: python scripts/package_release.py --native-dir dist/native --output-dir dist/release --version ${{ env.VERSION }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ runner.os }}
+          path: dist/release/
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Combine and verify checksums
+        shell: bash
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          cat SHA256SUMS-*.txt | LC_ALL=C sort -k2 > SHA256SUMS
+          rm SHA256SUMS-*.txt
+          for archive in *.zip; do unzip -q "$archive"; done
+          sha256sum -c SHA256SUMS
+          {
+            echo "智云采集插件 ${GITHUB_REF_NAME}：Windows / macOS 预构建独立插件。"
+            echo
+            echo "未签名、未公证；SHA-256 只证明下载内容与本页发布的一致。使用方法见仓库 README「从 Release 安装」。"
+            echo
+            echo "可执行文件与清单摘要（collector-configure 的 --sha256 用对应平台 exe 那一行）："
+            echo
+            echo '```text'
+            grep -E '/(handouter-zhiyun-collector(\.exe)?|plugin-manifest\.json)$' SHA256SUMS
+            echo '```'
+          } > "$RUNNER_TEMP/notes.md"
+          find . -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
+      - name: Create GitHub Release
+        shell: bash
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          prerelease=()
+          if [[ "$GITHUB_REF_NAME" =~ (a|b|rc|dev)[0-9]*$ ]]; then prerelease=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "Zhiyun Collector $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md" \
+            "${prerelease[@]}" ./*.zip SHA256SUMS

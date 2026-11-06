@@ -24,9 +24,9 @@ v2 将在线资源获取接入同一个本机宿主。网站登录、API、页�
 | `auth_logout` | `{}` | 同 auth_status；清除插件持有的登录状态及计划 |
 | `catalog` | `{parent_id:null或ID,cursor:null或ID,query:字符串}` | `type: catalog`，`items:[{id,title,kind:collection或resource}]`、`next_cursor:null或ID` |
 | `plan` | `{resource_id:ID}` | `type: plan`，`plan_id,title,lecture_date,media_hosts,expires_at` |
-| `collect` | `{plan_id:ID,allowed_media_hosts:[域名],output_path:新绝对路径}` | 原有 `progress` 阶段与 `result/output_path` |
+| `collect` | `{plan_id:ID,allowed_media_hosts:[域名],output_path:新绝对路径}`，可选 `progress_bytes:布尔` | 原有 `progress` 阶段与 `result/output_path`；字节进度见 v1 `convert` |
 
-能力声明只列实际支持的方法。纯本地转换继续使用 v1；不支持登录的 v2 资源插件不应伪造登录流程。桌面根据声明展示可用操作，不根据站点 ID 分支。
+能力声明只列实际支持的方法，外加可选特性标记 `progress_bytes`（`0.3.0.dev3` 起，含义与 v1 相同：`collect` 接受可选 `progress_bytes`，只在下载回放视频时报告字节数，课件图下载不计入）。宿主应忽略不认识的能力项。纯本地转换继续使用 v1；不支持登录的 v2 资源插件不应伪造登录流程。桌面根据声明展示可用操作，不根据站点 ID 分支。
 
 目录页最多 100 项，整个帧仍最多 16 KiB；插件必须按实际 UTF-8 编码长度分页，不能丢弃溢出条目。ID、游标和计划 ID 最长 256 个 ASCII 字符，只允许字母、数字、`-_.:`，不得编码凭证或 URL。显示标题最长 300 字符，可包含普通问号和 @ 标点，但不得含控制字符、URL 或 Cookie、Authorization、auth_key、token、signature 等敏感形态。未知授课日期为 null。
 
@@ -78,7 +78,7 @@ Course Compiler 的采集插件是独立安装的本机程序。开发者可以�
 
 桌面通过参数数组 `[absolute_executable_path, "protocol"]` 启动一次进程处理一次请求。stdin 写入一行 UTF-8 JSON 并关闭；stdout 只允许 UTF-8 NDJSON。不得在 stdout 写 banner、日志、堆栈、URL 或 Cookie。stderr 被丢弃，诊断应映射为稳定错误码。不得要求交互式终端或在后台脱离父进程运行。
 
-请求信封只有 `protocol_version`（整数 1）、`method`、`params`。字段集合严格校验，未知方法、字段或版本必须失败。客户端每帧最大 16 KiB，最多 1000 个进度帧；开发者应只在阶段变化时发进度。版本升级必须显式协商，不能通过课程材料改变接口。
+请求信封只有 `protocol_version`（整数 1）、`method`、`params`。字段集合严格校验，未知方法、字段或版本必须失败。客户端每帧最大 16 KiB，最多 1000 个进度帧；开发者应只在阶段变化时发进度，宿主显式请求字节进度（见 `convert`）时除外。版本升级必须显式协商，不能通过课程材料改变接口。
 
 ### identity
 
@@ -89,6 +89,8 @@ Course Compiler 的采集插件是独立安装的本机程序。开发者可以�
 ```json
 {"type":"identity","tool_id":"org.example.lecture-collector","protocol_version":1,"tool_version":"1.0.0","capabilities":["inspect","convert"]}
 ```
+
+`capabilities` 必须含 `inspect`、`convert`。可选特性标记 `progress_bytes` 表示 `convert` 支持下文的字节进度；宿主只在看到这一项时才发送 `progress_bytes` 参数，并应忽略不认识的能力项。智云插件 `0.3.0.dev3` 起声明 `["inspect","convert","progress_bytes"]`。
 
 ### inspect
 
@@ -108,11 +110,29 @@ Course Compiler 的采集插件是独立安装的本机程序。开发者可以�
 
 请求 `params`：`source_path,source_sha256,allowed_media_hosts,output_path`；不接受软件路径、任意命令、TLS 绕过开关或回调 URL。必须重新验证源摘要和精确已确认域名集合，源已改变或域名不一致即失败。输出只能写入新的 `output_path`；不得覆盖原件或已有文件。
 
-可选阶段帧：`{"type":"progress","stage":"preparing"}`。阶段只允许 `preparing,downloading,packaging,publishing`。没有可靠总量时不声称百分比。下载只访问确认范围，不能用重定向扩展授权；实现者负责正常 HTTPS 证书校验等网络边界。
+可选阶段帧：`{"type":"progress","stage":"preparing"}`。阶段只允许 `preparing,downloading,packaging,publishing`。没有可靠总量时不声称百分比。
+
+#### 字节进度（可选，`progress_bytes`）
+
+声明了 `progress_bytes` 能力的插件，`convert` 的 `params` 还接受可选字段 `"progress_bytes"`，值必须是 JSON 布尔值（字符串、数字、null 均拒绝）。除此之外字段集合仍严格校验，未知字段照旧失败。不带该字段或为 `false` 时，输出与此前完全一致（老宿主、闭源 GUI 不受影响）。
+
+为 `true` 时，插件在 `downloading` 阶段除照常先发一个不带字节字段的阶段帧外，再发字节帧：
+
+```json
+{"type":"progress","stage":"downloading","completed_bytes":524288000,"total_bytes":1258291200}
+```
+
+- `completed_bytes`：已落地的媒体字节数，非负整数，单调不减。
+- `total_bytes`：正整数；总量未知时为 `null`（服务器没给 `Content-Length`，或分段 HLS）。已收字节超过声明长度时改报 `null`。
+- 只有 `downloading` 阶段带这两个字段；其他阶段帧不变。宿主应同时接受带与不带字节字段的 `downloading` 帧。
+- 限频：同一阶段内两次字节帧间隔至少 1 秒；已知总量时，相邻两帧的 `completed_bytes` 至少相差总量的 1%。总量未知时，每发 60 帧间隔翻倍。全部进度帧（阶段帧加字节帧）合计不超过 500（宿主上限 1000），快到上限时停止发字节帧，保证后续阶段帧和终态帧仍能发出。
+- 字节数只来自本机计数，不含 URL、域名或任何签名信息。下载只访问确认范围，不能用重定向扩展授权；实现者负责正常 HTTPS 证书校验等网络边界。
 
 成功终态：`{"type":"result","output_path":"/absolute/new-standard.zip"}`，随后以退出码 0 结束。必须先完整关闭并原子发布标准包，再发送成功帧。包遵循 [本地资产规范](STANDARD_PACKAGE.md)，只含已落地资源，不含原始私有包、URL、Cookie、程序和采集配置。桌面还会运行完整 `local_inspect`，协议成功不等于导入成功。
 
-失败终态：`{"type":"error","code":"COLLECTOR_FAILED","message":"采集未完成，请检查授权后重试"}`，随后非零退出。不能输出异常原文；桌面只显示自己的固定脱敏提示。失败或中断不得发布半成品，不得删除源文件。客户端可终止整个进程树；插件应在输出目录中暂存，支持中断后清理，不在用户其他目录遗留私有副本。
+失败终态：`{"type":"error","code":"COLLECTOR_FAILED","message":"采集未完成，请检查授权后重试"}`，随后非零退出。`0.3.0.dev3` 起，若浏览器包的 `private/source.json` 缺少媒体地址（`videoUrl` 缺失或为空，通常是页面未加载完就导出），`inspect`/`convert` 改用 `"code":"COLLECTOR_NO_MEDIA"`，`message` 不变；其他失败仍为 `COLLECTOR_FAILED`，客户端应把未知错误码当作 `COLLECTOR_FAILED` 处理。不能输出异常原文；桌面只显示自己的固定脱敏提示。失败或中断不得发布半成品，不得删除源文件。客户端可终止整个进程树；插件应在输出目录中暂存，支持中断后清理，不在用户其他目录遗留私有副本。
+
+智云参考实现的暂存位置是输出文件所在目录下的 `.handouter-collector-*`（v2 另有关闭即删除的 `.collector-assets-*` 临时文件）。正常失败时删除暂存再报错；收到宿主的取消请求（POSIX `SIGTERM`、Windows `CTRL_BREAK`）时同样先删除暂存再以非零码退出。被强制结束（Windows 关闭 Job、`SIGKILL`）时无法自行清理：宿主应把 `output_path` 放在自己管理的临时目录里并整体删除；此外下一次在同一目录运行时，插件会删除超过 24 小时未变动、且只含自身暂存文件的 `.handouter-collector-*` 目录。发布优先用硬链接；在不支持硬链接的 Windows 卷（如 FAT/exFAT）上改用不覆盖已有文件的重命名。
 
 ## 开发与发行验证
 

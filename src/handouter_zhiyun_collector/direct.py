@@ -31,7 +31,8 @@ from .collector import (CollectorError, MAX_IMAGE, MAX_META, MAX_SOURCE_UNCOMPRE
 CLASSROOM = "classroom.zju.edu.cn"
 YJAPI = "yjapi.cmc.zju.edu.cn"
 SERVICE = "org.handouter.zhiyun.collector.v2"
-CAPABILITIES = ["auth_status", "auth_login", "auth_logout", "catalog", "plan", "collect"]
+# ``progress_bytes`` is a feature flag for ``collect``, not a method; see docs/PROTOCOL.md.
+CAPABILITIES = ["auth_status", "auth_login", "auth_logout", "catalog", "plan", "collect", "progress_bytes"]
 MAX_ITEMS = 1000
 PLAN_SECONDS = 900
 
@@ -335,7 +336,7 @@ class Adapter:
         return {"type": "plan", "plan_id": plan_id, "title": resource["title"],
                 "lecture_date": resource["lecture_date"], "media_hosts": hosts, "expires_at": plan["expires_at"]}
 
-    def collect(self, plan_id, allowed_media_hosts, output_path, progress):
+    def collect(self, plan_id, allowed_media_hosts, output_path, progress, byte_progress=None):
         session = self._session()
         plan = self.state.get("plan", plan_id)
         if plan["expires_at"] <= int(time.time()):
@@ -379,7 +380,8 @@ class Adapter:
                 archive.writestr("slides_meta.json", json.dumps(metadata))
             source.seek(0)
             _convert_stream(source, target, allowed_media_host=_host(video), media_url=video,
-                    progress=lambda stage: progress(stage) if stage in {"packaging", "publishing"} else None)
+                    progress=lambda stage: progress(stage) if stage in {"packaging", "publishing"} else None,
+                    on_bytes=byte_progress)
         return {"type": "result", "output_path": os.fspath(target)}
 
 
