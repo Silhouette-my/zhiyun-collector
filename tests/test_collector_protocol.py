@@ -14,7 +14,7 @@ from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import zipfile
 
-from handouter_zhiyun_collector import collector, protocol
+from handouter_zhiyun_collector import __version__, collector, protocol
 from package_assertions import inspect
 
 
@@ -65,7 +65,7 @@ class CollectorProtocolTests(unittest.TestCase):
         code, frames, _ = self.invoke({"protocol_version": 1, "method": "identity", "params": {}})
         self.assertEqual(code, 0)
         self.assertEqual(frames, [{"type": "identity", "tool_id": "handouter-zhiyun-collector",
-                                   "protocol_version": 1, "tool_version": "0.3.0.dev3",
+                                   "protocol_version": 1, "tool_version": __version__,
                                    "capabilities": ["inspect", "convert", "progress_bytes"]}])
 
     def test_inspection_returns_host_and_hash_but_never_signed_url(self):

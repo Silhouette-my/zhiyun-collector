@@ -97,7 +97,7 @@ python scripts/build_collector_plugin.py --output-dir dist/native
 
 [测试 CI](.github/workflows/test.yml) 在 macOS、Windows 运行合成测试。[原生构建](.github/workflows/build.yml) 由维护者手动触发，只上传 Actions artifact。
 
-[发布流程](.github/workflows/release.yml)：维护者把 `pyproject.toml`、`src/handouter_zhiyun_collector/__init__.py` 和 `scripts/build_collector.py` 里的版本号改成同一个新版本，合入 main 后推送标签 `v<版本>`（如 `git tag v0.3.0 && git push origin v0.3.0`）。工作流先核对标签与版本号一致，在 Windows、macOS 上跑合成测试、构建并做身份探测，再用 `scripts/package_release.py` 打包，最后由唯一有 `contents: write` 权限的任务汇总 `SHA256SUMS`（列出每个 ZIP 及其中 exe、清单等文件的摘要）、逐项校验后创建 GitHub Release。带 `dev`、`a`、`b`、`rc` 后缀的版本标为预发布。制品尚未签名/公证；清单摘要不等于签名。
+[发布流程](.github/workflows/release.yml)：维护者只改 `src/handouter_zhiyun_collector/__init__.py` 里的 `__version__`（`pyproject.toml` 和构建脚本都从这里读，依赖版本只写在 `pyproject.toml`），合入 main 后推送标签 `v<版本>`（如 `git tag v0.3.0 && git push origin v0.3.0`）。工作流先核对标签与版本号一致，在 Windows、macOS 上跑合成测试、构建并做身份探测，再用 `scripts/package_release.py` 打包，最后由唯一有 `contents: write` 权限的任务汇总 `SHA256SUMS`（列出每个 ZIP 及其中 exe、清单等文件的摘要）、逐项校验后创建 GitHub Release。带 `dev`、`a`、`b`、`rc` 后缀的版本标为预发布。制品尚未签名/公证；清单摘要不等于签名。
 
 ## 接口和安全边界
 

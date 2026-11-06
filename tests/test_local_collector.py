@@ -157,6 +157,27 @@ class CollectorTests(unittest.TestCase):
                 self.assertEqual(seen["host"], "media.example.test")
                 self.assertEqual(seen["context"].verify_mode, __import__("ssl").CERT_REQUIRED)
 
+    def test_redirect_status_is_rejected_and_connection_closed(self):
+        closed = []
+        for status in (301, 302, 307, 308, 403):
+            class FakeResponse:
+                headers = {"Location": "https://elsewhere.example.test/x.mp4"}
+                def close(self): closed.append("response")
+                def read(self, amount): return b""
+            FakeResponse.status = status
+            class FakeConnection:
+                def __init__(self, *_args, **_kwargs): pass
+                def request(self, *_args, **_kwargs): pass
+                def getresponse(self): return FakeResponse()
+                def close(self): closed.append("connection")
+            with self.subTest(status=status), \
+                 patch("socket.getaddrinfo", return_value=[(2, 1, 6, "", ("93.184.216.34", 0))]), \
+                 patch("http.client.HTTPSConnection", FakeConnection):
+                with self.assertRaisesRegex(collector_module.CollectorError, "重定向"):
+                    collector_module._media_request("https://media.example.test/lecture.mp4", "media.example.test", False)
+        self.assertGreaterEqual(closed.count("connection"), 5)
+        self.assertEqual(closed.count("response"), 5)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,15 +10,25 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import re
 import tempfile
+import tomllib
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.3.0.dev3"
-CERTIFI_VERSION = "2026.7.22"
-PYWEBVIEW_VERSION = "6.1"
-KEYRING_VERSION = "25.6.0"
 PACKAGE = "handouter_zhiyun_collector"
+
+
+def _project_metadata(root: Path = ROOT) -> tuple[str, list[str]]:
+    """Version from the package (single source), pinned dependencies from pyproject."""
+    init = (root / "src" / PACKAGE / "__init__.py").read_text(encoding="utf-8")
+    version = re.search(r'^__version__ = "([^"]+)"$', init, re.M).group(1)
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    return version, list(project["dependencies"])
+
+
+VERSION, DEPENDENCIES = _project_metadata()
+CERTIFI_VERSION = next(item.split("==", 1)[1] for item in DEPENDENCIES if item.startswith("certifi=="))
 ALLOW = ("__init__.py", "__main__.py", "collector.py", "protocol.py", "direct.py", "THIRD_PARTY_NOTICES.txt")
 
 
@@ -46,9 +56,7 @@ def build(output: Path, *, root: Path = ROOT) -> Path:
     info = f"{PACKAGE}-{VERSION}.dist-info"
     files[f"{info}/METADATA"] = ("Metadata-Version: 2.1\nName: handouter-zhiyun-collector\nVersion: " + VERSION +
                                    "\nSummary: Standalone authorized Zhiyun asset collector\nLicense: LicenseRef-Proprietary\nRequires-Python: >=3.11,<4\n"
-                                   f"Requires-Dist: certifi=={CERTIFI_VERSION}\n"
-                                   f"Requires-Dist: pywebview=={PYWEBVIEW_VERSION}\n"
-                                   f"Requires-Dist: keyring=={KEYRING_VERSION}\n").encode()
+                                   + "".join(f"Requires-Dist: {item}\n" for item in DEPENDENCIES)).encode()
     files[f"{info}/WHEEL"] = b"Wheel-Version: 1.0\nGenerator: handouter-collector-builder\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
     files[f"{info}/entry_points.txt"] = b"[console_scripts]\nhandouter-zhiyun-collector = handouter_zhiyun_collector.__main__:main\n"
     files[f"{info}/collector-manifest.json"] = (json.dumps({"kind": "independent-collector",

@@ -265,14 +265,12 @@ def _slide_extension(data: bytes) -> str:
 
 
 class _PinnedResponse:
-    def __init__(self, connection: http.client.HTTPConnection, response: http.client.HTTPResponse, url: str):
+    """A 200 response on the pinned connection; redirects never get this far."""
+
+    def __init__(self, connection: http.client.HTTPConnection, response: http.client.HTTPResponse):
         self.connection = connection
         self.response = response
-        self.url = url
         self.headers = response.headers
-
-    def geturl(self) -> str:
-        return self.url
 
     def read(self, amount: int) -> bytes:
         return self.response.read(amount)
@@ -308,7 +306,7 @@ def _media_request(url: str, allowed_host: str, development_loopback: bool):
             response.close()
             connection.close()
             raise CollectorError("媒体地址不可用或发生重定向")
-        return _PinnedResponse(connection, response, url)
+        return _PinnedResponse(connection, response)
     except BaseException:
         connection.close()
         raise
@@ -349,8 +347,6 @@ def _download_media(url: str, temporary_root: Path, allowed_host: str,
         try:
             response = _media_request(current, allowed_host, development_loopback)
             with response:
-                if response.geturl() != current:
-                    raise CollectorError("媒体重定向已拒绝")
                 content_type = str(response.headers.get("Content-Type", "")).lower()
                 is_hls = ("mpegurl" in content_type or urllib.parse.urlsplit(current).path.lower().endswith(".m3u8"))
                 if is_hls:
@@ -391,8 +387,6 @@ def _download_media(url: str, temporary_root: Path, allowed_host: str,
             for segment in urls:
                 try:
                     with _media_request(segment, allowed_host, development_loopback) as response:
-                        if response.geturl() != segment:
-                            raise CollectorError("HLS分段重定向已拒绝")
                         segment_bytes = 0
                         first = True
                         while block := response.read(CHUNK):
