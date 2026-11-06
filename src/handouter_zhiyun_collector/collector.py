@@ -55,17 +55,6 @@ class CollectorError(ValueError):
 NO_MEDIA = "COLLECTOR_NO_MEDIA"
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    try:
-        with path.open("rb") as source:
-            while block := source.read(CHUNK):
-                digest.update(block)
-    except OSError as exc:
-        raise CollectorError("浏览器资产包不可读取") from exc
-    return digest.hexdigest()
-
-
 def _sha256_stream(stream) -> str:
     digest = hashlib.sha256()
     stream.seek(0)
@@ -112,8 +101,6 @@ def inspect_export(export_zip: str | Path, *, require_https: bool = False) -> di
                 if not isinstance(private, dict) or not isinstance(course, dict):
                     raise CollectorError("浏览器资产包元数据格式无效")
                 fingerprint = _browser_fingerprint(archive)
-            if _sha256_stream(source_stream) != digest:
-                raise CollectorError("浏览器资产包在预检期间已更改")
     except (OSError, zipfile.BadZipFile) as exc:
         raise CollectorError("浏览器资产包无效") from exc
     if not isinstance(private, dict) or not isinstance(course, dict):
@@ -240,7 +227,6 @@ def _validate_media_url(value: object, *, allowed_host: str, development_loopbac
         raise CollectorError("媒体地址的域名无效") from exc
     if url_host != confirmed_host:
         raise CollectorError("媒体地址的域名不等于操作者明确选择的域名")
-    _resolved_host(parts.hostname)
     return value
 
 
@@ -283,14 +269,25 @@ class _PinnedResponse:
         self.connection.close()
 
 
+# host -> pinned address while a download is in progress (see _download_media);
+# None otherwise, so a lone request resolves afresh.
+_RESOLVED: dict[str, str] | None = None
+
+
 def _media_request(url: str, allowed_host: str, development_loopback: bool):
     _validate_media_url(url, allowed_host=allowed_host, development_loopback=development_loopback)
     parts = urllib.parse.urlsplit(url)
     host = parts.hostname
     port = parts.port or (443 if parts.scheme == "https" else 80)
-    # Connect to the IP we checked, not a second DNS answer. HTTPS keeps the
-    # original host for SNI and certificate verification; no TLS bypass exists.
-    pinned_ip = _resolved_host(host)
+    # Resolve the confirmed host once per download and pin that address for
+    # every request, so a changing DNS answer cannot move the transfer mid-way.
+    # HTTPS keeps the original host for SNI and certificate verification.
+    if _RESOLVED is None:
+        pinned_ip = _resolved_host(host)
+    else:
+        if host not in _RESOLVED:
+            _RESOLVED[host] = _resolved_host(host)
+        pinned_ip = _RESOLVED[host]
     if parts.scheme == "https":
         connection = http.client.HTTPSConnection(host, port, timeout=60,
             context=ssl.create_default_context(cafile=certifi.where()))
@@ -341,7 +338,21 @@ def _content_length(response) -> int | None:
 
 def _download_media(url: str, temporary_root: Path, allowed_host: str,
                     development_loopback: bool, on_bytes=None) -> Path:
-    """Land the confirmed media; ``on_bytes(completed, total_or_None)`` sees every chunk."""
+    """Land the confirmed media; ``on_bytes(completed, total_or_None)`` sees every chunk.
+
+    The host is resolved once for the whole download (playlist and every HLS
+    segment) and that address is pinned.
+    """
+    global _RESOLVED
+    _RESOLVED = {}
+    try:
+        return _download_pinned(url, temporary_root, allowed_host, development_loopback, on_bytes)
+    finally:
+        _RESOLVED = None
+
+
+def _download_pinned(url: str, temporary_root: Path, allowed_host: str,
+                     development_loopback: bool, on_bytes=None) -> Path:
     current = url
     for depth in range(2):
         try:
@@ -416,8 +427,6 @@ def convert(export_zip: str | Path, output_zip: str | Path, *, allowed_media_hos
     target = Path(output_zip).expanduser()
     if source.is_symlink() or not source.is_file() or target.exists() or target.is_symlink():
         raise CollectorError("采集输入必须是普通文件，输出必须是新文件")
-    if expected_source_sha256 and _sha256(source) != expected_source_sha256:
-        raise CollectorError("浏览器资产包在预检后已更改")
     with source.open("rb") as source_stream:
         return _convert_stream(source_stream, target, allowed_media_host=allowed_media_host,
             development_loopback=development_loopback, expected_source_sha256=expected_source_sha256,
@@ -495,8 +504,6 @@ def _convert_stream(source_stream, target: Path, *, allowed_media_host: str,
                 raise CollectorError("课件原始序号无效")
             events.append({"filename": image_names[filename], "source_index": index,
                            "start_ms": start, "end_ms": None})
-        if expected_source_sha256 and _sha256_stream(source_stream) != expected_source_sha256:
-            raise CollectorError("浏览器资产包在预检后已更改")
     remove_stale_staging(target.parent)
     with tempfile.TemporaryDirectory(prefix=STAGING_PREFIX, dir=target.parent) as temporary:
         temporary_root = Path(temporary)

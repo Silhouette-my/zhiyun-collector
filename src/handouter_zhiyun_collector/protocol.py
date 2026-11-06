@@ -150,10 +150,10 @@ def _convert(params: dict) -> None:
             any(not isinstance(host, str) or not host or len(host) > 253 for host in allowed) or
             len(set(allowed)) != len(allowed)):
         raise ProtocolError("allowed_media_hosts无效")
-    # Re-inspect immediately before conversion. The confirmation must name the
-    # exact host set shown for this exact source digest.
-    inspected = inspect_export(source_path, require_https=True)
-    if inspected["source_sha256"] != expected_hash or set(inspected["media_hosts"]) != set(allowed):
+    # inspect reports exactly one media host. convert() checks the source digest
+    # against the confirmation on the stream it then reads, and the media URL's
+    # host against this one confirmed host, so no separate re-inspect pass.
+    if len(allowed) != 1:
         raise CollectorError("确认信息与预检资产不匹配")
     source = Path(source_path).expanduser().resolve()
     target = Path(output_path).expanduser().absolute()

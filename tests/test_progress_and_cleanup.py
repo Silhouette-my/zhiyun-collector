@@ -2,6 +2,7 @@
 
 import contextlib
 import copy
+import hashlib
 import io
 import json
 import os
@@ -105,6 +106,21 @@ class ConvertProgressTests(unittest.TestCase):
              patch.object(protocol.time, "monotonic", FakeClock(step)):
             return Wire.invoke(request)
 
+    def test_convert_hashes_the_source_once_and_still_rejects_a_changed_export(self):
+        media = MP4_HEADER + b"0" * 1000
+        request = self.request(self.out / "once.zip")
+        real = collector._sha256_stream
+        with patch.object(collector, "_sha256_stream", side_effect=real) as digest:
+            code, frames, _wire = self.run_convert(request, lambda url, *_: ChunkedResponse(url, media))
+        self.assertEqual(code, 0, frames)
+        self.assertEqual(digest.call_count, 1)
+        changed = self.request(self.out / "changed.zip")
+        changed["params"]["source_sha256"] = "0" * 64
+        code, frames, _wire = self.run_convert(changed, lambda url, *_: ChunkedResponse(url, media))
+        self.assertEqual(code, 1)
+        self.assertEqual(frames[-1]["type"], "error")
+        self.assertFalse((self.out / "changed.zip").exists())
+
     def test_without_opt_in_frames_are_unchanged(self):
         media = MP4_HEADER + b"0" * 200_000
         for extra in ({}, {"progress_bytes": False}):
@@ -196,13 +212,15 @@ class ConvertProgressTests(unittest.TestCase):
 
     def test_no_media_code_is_reported_by_convert_too(self):
         self.write_export("")
-        digest = collector._sha256(self.source)
+        digest = hashlib.sha256(self.source.read_bytes()).hexdigest()
         with patch.object(collector, "_media_request") as download:
             code, frames, wire = Wire.invoke({"protocol_version": 1, "method": "convert", "params": {
                 "source_path": str(self.source), "source_sha256": digest, "allowed_media_hosts": ["media.example.test"],
                 "output_path": str(self.out / "none.zip"), "progress_bytes": True}})
         self.assertEqual(code, 1)
-        self.assertEqual(frames, [{"type": "error", "code": "COLLECTOR_NO_MEDIA", "message": protocol.ERROR_MESSAGE}])
+        # The request fails while reading the export, before any download stage.
+        self.assertEqual(frames[-1], {"type": "error", "code": "COLLECTOR_NO_MEDIA", "message": protocol.ERROR_MESSAGE})
+        self.assertNotIn("downloading", [frame.get("stage") for frame in frames])
         download.assert_not_called()
         self.assertEqual(list(self.out.iterdir()), [])
 

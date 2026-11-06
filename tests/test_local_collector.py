@@ -157,6 +157,35 @@ class CollectorTests(unittest.TestCase):
                 self.assertEqual(seen["host"], "media.example.test")
                 self.assertEqual(seen["context"].verify_mode, __import__("ssl").CERT_REQUIRED)
 
+    def test_hls_download_resolves_the_host_once_and_pins_it(self):
+        playlist = b"#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1,\nseg1.ts\n#EXTINF:1,\nseg2.ts\n#EXTINF:1,\nseg3.ts\n#EXT-X-ENDLIST\n"
+        bodies = {"/play.m3u8": (playlist, "application/vnd.apple.mpegurl")}
+        bodies.update({f"/seg{n}.ts": (b"\x47" + bytes([n]) * 187, "video/mp2t") for n in (1, 2, 3)})
+        connected = []
+        class FakeResponse(io.BytesIO):
+            status = 200
+            def __init__(self, path):
+                data, kind = bodies[path]
+                super().__init__(data)
+                self.headers = {"Content-Type": kind, "Content-Length": str(len(data))}
+        class FakeConnection:
+            def __init__(self, *_args, **_kwargs): pass
+            def request(self, _method, path, *, headers):
+                self.path = path
+                self._create_connection(("media.example.test", 443), 60)
+            def getresponse(self): return FakeResponse(self.path)
+            def close(self): pass
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(collector_module, "_resolved_host", return_value="93.184.216.34") as resolve, \
+             patch("socket.create_connection", side_effect=lambda address, *_: connected.append(address)), \
+             patch("http.client.HTTPSConnection", FakeConnection):
+            output = collector_module._download_media("https://media.example.test/play.m3u8", Path(directory),
+                                                      "media.example.test", False)
+            self.assertEqual(output.read_bytes()[:1], b"\x47")
+        self.assertEqual(resolve.call_count, 1)
+        self.assertEqual(connected, [("93.184.216.34", 443)] * 4)  # playlist + 3 segments
+        self.assertIsNone(collector_module._RESOLVED)
+
     def test_redirect_status_is_rejected_and_connection_closed(self):
         closed = []
         for status in (301, 302, 307, 308, 403):
